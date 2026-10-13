@@ -7,6 +7,9 @@ import Departments from './pages/Departments';
 import DailyKitchen from './pages/DailyKitchen';
 import AmountClaim from './pages/AmountClaim';
 import History from './pages/History';
+import FirebaseModal from './components/FirebaseModal';
+import { isFirebaseConfigured } from './firebase';
+import { store } from './store';
 
 const NAV_ITEMS = [
   { path: '/daily-kitchen', label: 'Daily Kitchen', icon: '🔥', section: 'Operations' },
@@ -20,11 +23,25 @@ const NAV_ITEMS = [
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('kd_theme') || 'light');
+  const [showFirebaseModal, setShowFirebaseModal] = useState(false);
+  const [isCloudActive, setIsCloudActive] = useState(() => isFirebaseConfigured());
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('kd_theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    // If Firebase is active, start live listener for cross-device sync
+    if (isCloudActive) {
+      const unsub = store.initLiveFirestoreSync();
+      return () => unsub();
+    }
+  }, [isCloudActive]);
+
+  function refreshCloudStatus() {
+    setIsCloudActive(isFirebaseConfigured());
+  }
 
   function toggleTheme() {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
@@ -80,6 +97,28 @@ export default function App() {
                 <span>{theme === 'light' ? '☀️ Day' : '🌙 Dark'}</span>
               </button>
             </div>
+
+            <div className="flex items-center justify-between mb-sm">
+              <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Cloud
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowFirebaseModal(true)}
+                className="theme-toggle-btn"
+                title="Configure Firebase Firestore cloud sync"
+                style={{
+                  fontSize: 11,
+                  color: isCloudActive ? 'var(--success)' : 'var(--text-secondary)',
+                  borderColor: isCloudActive ? 'var(--success-border)' : 'var(--border-subtle)',
+                  background: isCloudActive ? 'var(--success-subtle)' : 'var(--bg-tertiary)',
+                  fontWeight: 600,
+                }}
+              >
+                <span>{isCloudActive ? '🟢 Firestore' : '🟡 Offline'}</span>
+              </button>
+            </div>
+
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
               Kitchen Dashboard v1.0
             </div>
@@ -99,6 +138,13 @@ export default function App() {
             <Route path="/amount-claim" element={<AmountClaim />} />
           </Routes>
         </main>
+
+        {/* Firebase Firestore Setup & Sync Modal */}
+        <FirebaseModal
+          isOpen={showFirebaseModal}
+          onClose={() => setShowFirebaseModal(false)}
+          onConfigChange={refreshCloudStatus}
+        />
       </div>
     </HashRouter>
   );

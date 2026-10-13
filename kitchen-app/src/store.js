@@ -3,6 +3,13 @@
  * Works offline immediately. Firebase sync can be enabled by configuring firebase.js
  */
 
+import {
+  syncDocToFirestore,
+  fetchDocFromFirestore,
+  isFirebaseConfigured,
+  listenDocFirestore
+} from './firebase';
+
 const STORAGE_KEYS = {
   MASTER_LIST: 'kd_master_list',
   RECIPES: 'kd_recipes',
@@ -25,6 +32,12 @@ function loadFromStorage(key, defaultValue = []) {
 
 function saveToStorage(key, data) {
   localStorage.setItem(key, JSON.stringify(data));
+  // Asynchronously mirror to Firestore if configured
+  if (isFirebaseConfigured()) {
+    syncDocToFirestore('kitchen_data', key, data).catch(err => {
+      console.warn(`[Firestore Sync] Failed for ${key}:`, err);
+    });
+  }
 }
 
 function generateId() {
@@ -522,6 +535,71 @@ export const store = {
   clearRecipeHistory() {
     this.saveRecipeHistory([]);
     return [];
+  },
+
+  // ── Firestore Cloud Synchronization ──
+  async syncAllToFirestore() {
+    if (!isFirebaseConfigured()) {
+      throw new Error('Firebase Firestore is not configured yet. Please enter project credentials.');
+    }
+
+    const payload = {
+      [STORAGE_KEYS.MASTER_LIST]: this.getMasterList(),
+      [STORAGE_KEYS.RECIPES]: this.getRecipes(),
+      [STORAGE_KEYS.MONTHLY_MENU]: loadFromStorage(STORAGE_KEYS.MONTHLY_MENU, {}),
+      [STORAGE_KEYS.DEPARTMENTS]: this.getDepartments(),
+      [STORAGE_KEYS.DAILY_KITCHEN]: loadFromStorage(STORAGE_KEYS.DAILY_KITCHEN, {}),
+      [STORAGE_KEYS.AMOUNT_CLAIMS]: this.getAmountClaims(),
+      [STORAGE_KEYS.RECIPE_HISTORY]: this.getRecipeHistory(),
+    };
+
+    const promises = Object.entries(payload).map(([k, v]) => syncDocToFirestore('kitchen_data', k, v));
+    await Promise.all(promises);
+    return true;
+  },
+
+  async pullAllFromFirestore() {
+    if (!isFirebaseConfigured()) {
+      throw new Error('Firebase Firestore is not configured yet.');
+    }
+
+    const keys = Object.values(STORAGE_KEYS);
+    let updatedCount = 0;
+    for (const key of keys) {
+      const remoteData = await fetchDocFromFirestore('kitchen_data', key);
+      if (remoteData !== null && remoteData !== undefined) {
+        localStorage.setItem(key, JSON.stringify(remoteData));
+        updatedCount++;
+      }
+    }
+    return updatedCount;
+  },
+
+  initLiveFirestoreSync(onRemoteUpdate) {
+    if (!isFirebaseConfigured()) return () => {};
+
+    const unsubscribers = [];
+    const keys = Object.values(STORAGE_KEYS);
+
+    keys.forEach(key => {
+      const unsub = listenDocFirestore('kitchen_data', key, remoteData => {
+        if (remoteData !== null && remoteData !== undefined) {
+          const currentLocal = localStorage.getItem(key);
+          const serializedRemote = JSON.stringify(remoteData);
+          if (currentLocal !== serializedRemote) {
+            localStorage.setItem(key, serializedRemote);
+            if (typeof onRemoteUpdate === 'function') {
+              onRemoteUpdate(key, remoteData);
+            }
+          }
+        }
+      });
+      unsubscribers.push(unsub);
+    });
+
+    return () => {
+      unsubscribers.forEach(fn => fn && fn());
+    };
   },
 };
 
