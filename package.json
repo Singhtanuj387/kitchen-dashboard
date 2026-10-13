@@ -1,0 +1,10 @@
+{
+  "name": "kitchen-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "npm --prefix kitchen-app run dev",
+    "build": "npm --prefix kitchen-app run build",
+    "preview": "npm --prefix kitchen-app run preview"
+  }
+}
