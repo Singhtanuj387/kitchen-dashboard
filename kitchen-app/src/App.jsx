@@ -6,9 +6,11 @@ import MonthlyMenu from './pages/MonthlyMenu';
 import Departments from './pages/Departments';
 import DailyKitchen from './pages/DailyKitchen';
 import AmountClaim from './pages/AmountClaim';
+import History from './pages/History';
 
 const NAV_ITEMS = [
   { path: '/daily-kitchen', label: 'Daily Kitchen', icon: '🔥', section: 'Operations' },
+  { path: '/history', label: 'History', icon: '📜', section: 'Operations' },
   { path: '/master-list', label: 'Master List', icon: '📦', section: 'Data' },
   { path: '/recipes', label: 'Recipes', icon: '🍳', section: 'Data' },
   { path: '/monthly-menu', label: 'Monthly Menu', icon: '📅', section: 'Planning' },
@@ -89,6 +91,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/daily-kitchen" replace />} />
             <Route path="/daily-kitchen" element={<DailyKitchen />} />
+            <Route path="/history" element={<History />} />
             <Route path="/master-list" element={<MasterList />} />
             <Route path="/recipes" element={<Recipes />} />
             <Route path="/monthly-menu" element={<MonthlyMenu />} />

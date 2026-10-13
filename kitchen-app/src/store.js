@@ -10,6 +10,7 @@ const STORAGE_KEYS = {
   DEPARTMENTS: 'kd_departments',
   DAILY_KITCHEN: 'kd_daily_kitchen',
   AMOUNT_CLAIMS: 'kd_amount_claims',
+  RECIPE_HISTORY: 'kd_recipe_history',
 };
 
 // ── Helper Functions ──
@@ -484,7 +485,225 @@ export const store = {
     this.saveAmountClaims(claims);
     return claims;
   },
+
+  // ── Recipe History ──
+  getRecipeHistory() {
+    const history = loadFromStorage(STORAGE_KEYS.RECIPE_HISTORY);
+    if (!history || history.length === 0) {
+      saveToStorage(STORAGE_KEYS.RECIPE_HISTORY, DEFAULT_RECIPE_HISTORY);
+      return DEFAULT_RECIPE_HISTORY;
+    }
+    return history;
+  },
+
+  saveRecipeHistory(list) {
+    saveToStorage(STORAGE_KEYS.RECIPE_HISTORY, list);
+  },
+
+  addRecipeHistory(entry) {
+    const list = this.getRecipeHistory();
+    const existingIdx = list.findIndex(h => h.date === entry.date);
+    const item = { ...entry, id: entry.id || generateId() };
+    if (existingIdx !== -1) {
+      list[existingIdx] = item;
+    } else {
+      list.unshift(item);
+    }
+    this.saveRecipeHistory(list);
+    return list;
+  },
+
+  deleteRecipeHistory(id) {
+    const list = this.getRecipeHistory().filter(h => h.id !== id);
+    this.saveRecipeHistory(list);
+    return list;
+  },
+
+  clearRecipeHistory() {
+    this.saveRecipeHistory([]);
+    return [];
+  },
 };
+
+const DEFAULT_RECIPE_HISTORY = [
+  {
+    id: 'hist_20261014',
+    date: '2026-10-14',
+    dateFormatted: 'Wednesday, 14 Oct 2026',
+    generatedAt: '2026-10-13T07:30:00.000Z',
+    totalPeople: 147,
+    chargeablePeople: 87,
+    nonChargeablePeople: 60,
+    totalCost: 11240,
+    departments: [
+      { id: 'dept_temple', name: 'Temple', count: 60, isChargeable: false },
+      { id: 'dept_abhay', name: 'Abhay Hostel', count: 35, isChargeable: true },
+      { id: 'dept_bit', name: 'BIT Voice', count: 7, isChargeable: true },
+      { id: 'dept_congregation', name: 'Congregation', count: 45, isChargeable: true },
+    ],
+    meals: {
+      breakfast: [
+        {
+          dish: 'Dal Fry',
+          serving: 200,
+          servingUnit: 'ml',
+          requiredYield: 29,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 1840,
+          ingredients: [
+            { name: 'Dal (Arhar)', standardQty: 5, requiredQty: 4.83, unit: 'Kg', rate: 140, amount: 676.2 },
+            { name: 'Onion', standardQty: 2, requiredQty: 1.93, unit: 'Kg', rate: 30, amount: 57.9 },
+            { name: 'Tomato Chopped', standardQty: 2, requiredQty: 1.93, unit: 'L', rate: 35, amount: 67.55 },
+            { name: 'Soyabean Oil', standardQty: 0.5, requiredQty: 0.48, unit: 'L', rate: 120, amount: 57.6 },
+            { name: 'Jeera', standardQty: 30, requiredQty: 29, unit: 'gm', rate: 1.5, amount: 43.5 },
+            { name: 'Haldi', standardQty: 20, requiredQty: 19.33, unit: 'gm', rate: 0.4, amount: 7.73 },
+            { name: 'K Red Chilli', standardQty: 20, requiredQty: 19.33, unit: 'gm', rate: 0.7, amount: 13.53 },
+            { name: 'Salt', standardQty: 100, requiredQty: 96.67, unit: 'gm', rate: 0.02, amount: 1.93 },
+            { name: 'Dhaniya Patta', standardQty: 1, requiredQty: 0.97, unit: 'L', rate: 20, amount: 19.4 },
+          ],
+          cookingSteps: [
+            { stepNumber: 1, ingredient: 'Dal (Arhar)', text: 'अरहर दाल को धोकर हल्दी और नमक के साथ प्रेशर कुकर में 4 सीटी तक पका लें।' },
+            { stepNumber: 2, ingredient: 'Soyabean Oil', text: 'कड़ाही में तेल गरम करके जीरा, कटा प्याज और टमाटर भूनें। लाल मिर्च और गरम मसाला डालें। पकी हुई दाल डालकर 10 मिनट तक उबालें।' },
+            { stepNumber: 3, ingredient: 'Dhaniya Patta', text: 'गैस बंद करके ऊपर से बारीक कटा हरा धनिया पत्ता डालकर मिलाएँ।' }
+          ]
+        }
+      ],
+      lunch: [
+        {
+          dish: 'Alu Bagan Badi',
+          serving: 200,
+          servingUnit: 'ml',
+          requiredYield: 29,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 4620,
+          ingredients: [
+            { name: 'Alu', standardQty: 15, requiredQty: 14.5, unit: 'L', rate: 30, amount: 435 },
+            { name: 'Bagan', standardQty: 45, requiredQty: 43.5, unit: 'L', rate: 40, amount: 1740 },
+            { name: 'Badi', standardQty: 1, requiredQty: 0.97, unit: 'Kg', rate: 120, amount: 116.4 },
+            { name: 'Tomato Chopped', standardQty: 2, requiredQty: 1.93, unit: 'L', rate: 35, amount: 67.55 },
+            { name: 'Sarso Tel', standardQty: 0.8, requiredQty: 0.77, unit: 'L', rate: 180, amount: 138.6 },
+          ],
+          cookingSteps: [
+            { stepNumber: 1, ingredient: 'Alu', text: 'सबसे पहले हम आलू को तेल में रोस्ट करेंगे। फिर बचे हुए तेल में बड़ी को रोस्ट करके निकाल लेंगे।' },
+            { stepNumber: 2, ingredient: 'Sarso Tel', text: 'बचे हुए तेल में तेल और डालेंगे। इसके बाद तेजपत्ता, सूखी मिर्च, फोड़न और हींग डालेंगे।' },
+            { stepNumber: 3, ingredient: 'G Chilli', text: 'मसाला पेस्ट को छौंक में डालकर 10 मिनट धीमी आँच पर पकाएँगे। जब मसाला तेल छोड़ दे, तब कटे बैंगन और टमाटर डाल देंगे।' }
+          ]
+        },
+        {
+          dish: 'Jeera Rice',
+          serving: 400,
+          servingUnit: 'ml',
+          requiredYield: 59,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 2880,
+          ingredients: [
+            { name: 'Rice', standardQty: 8, requiredQty: 15.73, unit: 'Kg', rate: 45, amount: 707.85 },
+            { name: 'Soyabean Oil', standardQty: 0.5, requiredQty: 0.98, unit: 'L', rate: 120, amount: 117.6 },
+            { name: 'Jeera', standardQty: 60, requiredQty: 118, unit: 'gm', rate: 1.5, amount: 177 },
+          ],
+          cookingSteps: [
+            { stepNumber: 1, ingredient: 'Rice', text: 'चावल को अच्छी तरह धोकर 30 मिनट पानी में भिगो दें।' },
+            { stepNumber: 2, ingredient: 'Jeera', text: 'पतीले में तेल गरम करें, जीरा डालें। भीगा हुआ चावल और नापकर पानी डालें।' }
+          ]
+        }
+      ],
+      dinner: [
+        {
+          dish: 'Alu Bagan Badi',
+          serving: 200,
+          servingUnit: 'ml',
+          requiredYield: 29,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 4620,
+          ingredients: [
+            { name: 'Alu', standardQty: 15, requiredQty: 14.5, unit: 'L', rate: 30, amount: 435 },
+            { name: 'Bagan', standardQty: 45, requiredQty: 43.5, unit: 'L', rate: 40, amount: 1740 },
+          ],
+          cookingSteps: [
+            { stepNumber: 1, ingredient: 'Alu', text: 'सबसे पहले हम आलू को तेल में रोस्ट करेंगे।' }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    id: 'hist_20261013',
+    date: '2026-10-13',
+    dateFormatted: 'Tuesday, 13 Oct 2026',
+    generatedAt: '2026-10-12T07:30:00.000Z',
+    totalPeople: 147,
+    chargeablePeople: 87,
+    nonChargeablePeople: 60,
+    totalCost: 10450,
+    departments: [
+      { id: 'dept_temple', name: 'Temple', count: 60, isChargeable: false },
+      { id: 'dept_abhay', name: 'Abhay Hostel', count: 35, isChargeable: true },
+      { id: 'dept_bit', name: 'BIT Voice', count: 7, isChargeable: true },
+      { id: 'dept_congregation', name: 'Congregation', count: 45, isChargeable: true },
+    ],
+    meals: {
+      breakfast: [
+        {
+          dish: 'Dal Fry',
+          serving: 200,
+          servingUnit: 'ml',
+          requiredYield: 29,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 1840,
+          ingredients: [
+            { name: 'Dal (Arhar)', standardQty: 5, requiredQty: 4.83, unit: 'Kg', rate: 140, amount: 676.2 },
+          ],
+          cookingSteps: []
+        }
+      ],
+      lunch: [
+        {
+          dish: 'Sambhar',
+          serving: 200,
+          servingUnit: 'ml',
+          requiredYield: 29,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 3200,
+          ingredients: [
+            { name: 'Dal (Arhar)', standardQty: 4, requiredQty: 3.87, unit: 'Kg', rate: 140, amount: 541.8 },
+            { name: 'Drumstick (Sahjan)', standardQty: 2, requiredQty: 1.93, unit: 'Kg', rate: 50, amount: 96.5 },
+          ],
+          cookingSteps: []
+        },
+        {
+          dish: 'Jeera Rice',
+          serving: 400,
+          servingUnit: 'ml',
+          requiredYield: 59,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 2880,
+          ingredients: [],
+          cookingSteps: []
+        }
+      ],
+      dinner: [
+        {
+          dish: 'Alu Bagan Badi',
+          serving: 200,
+          servingUnit: 'ml',
+          requiredYield: 29,
+          yieldUnit: 'L',
+          standardYield: 30,
+          totalCost: 4620,
+          ingredients: [],
+          cookingSteps: []
+        }
+      ]
+    }
+  }
+];
 
 // ── Calculation Helpers ──
 export function calculateRequiredQty(standardQty, requiredYield, standardYield) {

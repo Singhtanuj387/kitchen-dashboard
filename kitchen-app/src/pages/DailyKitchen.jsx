@@ -1,8 +1,13 @@
 import { useState, useMemo, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { store, getYearMonth, getDateString, calculateRequiredQty, formatNumber, findMasterItem } from '../store';
+import { exportDayToExcel } from '../utils/excelExport';
 
 export default function DailyKitchen() {
-  const [selectedDate, setSelectedDate] = useState(() => getDateString(new Date()));
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const urlDate = searchParams.get('date');
+  const [selectedDate, setSelectedDate] = useState(() => urlDate || getDateString(new Date()));
   const [deptCounts, setDeptCounts] = useState(() => {
     const depts = store.getDepartments();
     const counts = {};
@@ -11,6 +16,12 @@ export default function DailyKitchen() {
   });
   const [activeTab, setActiveTab] = useState('all');
   const [toastMessage, setToastMessage] = useState('');
+
+  useEffect(() => {
+    if (urlDate && urlDate !== selectedDate) {
+      setSelectedDate(urlDate);
+    }
+  }, [urlDate]);
 
   // Generate Next Day Modal state
   const [showGenerateModal, setShowGenerateModal] = useState(false);
@@ -101,6 +112,95 @@ export default function DailyKitchen() {
     setShowGenerateModal(true);
   }
 
+  // Helper to build a comprehensive history snapshot for any date
+  function buildDaySnapshot(dateStr, countsMap, totalCount, chargeableCount, nonChargeableCount, menuObj) {
+    const dObj = new Date(dateStr + 'T00:00:00');
+    const dFormatted = dObj.toLocaleDateString('en-IN', {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+
+    const mealsObj = { breakfast: [], lunch: [], dinner: [] };
+    let dayTotalCost = 0;
+
+    ['breakfast', 'lunch', 'dinner'].forEach(m => {
+      const list = menuObj[m] || [];
+      mealsObj[m] = list.map(item => {
+        const rec = recipes.find(r => r.name.trim().toLowerCase() === item.dish.trim().toLowerCase());
+        if (!rec) {
+          return {
+            dish: item.dish,
+            serving: item.serving || 0,
+            servingUnit: 'ml',
+            requiredYield: 0,
+            yieldUnit: 'L',
+            totalCost: 0,
+            ingredients: [],
+            cookingSteps: [],
+          };
+        }
+
+        const isPieces = rec.yieldUnit === 'pcs';
+        const servingAmount = item.serving || 0;
+        const requiredYield = isPieces
+          ? Math.round(totalCount * servingAmount)
+          : Math.round((totalCount * servingAmount) / 1000);
+
+        const ingredients = rec.ingredients.map(ing => {
+          const reqQty = calculateRequiredQty(ing.standardQty, requiredYield, rec.standardYield);
+          const master = findMasterItem(ing.name, masterList);
+          const rate = master ? master.pricePerUnit : 0;
+          const amount = reqQty * rate;
+          return {
+            name: ing.name,
+            standardQty: ing.standardQty,
+            requiredQty: reqQty,
+            unit: ing.unit,
+            rate,
+            amount,
+            cookingProcess: ing.cookingProcess || '',
+          };
+        });
+
+        const dishCost = ingredients.reduce((sum, ing) => sum + ing.amount, 0);
+        dayTotalCost += dishCost;
+
+        return {
+          dish: item.dish,
+          serving: item.serving,
+          servingUnit: isPieces ? 'pcs' : 'ml',
+          requiredYield,
+          yieldUnit: rec.yieldUnit || 'L',
+          totalCost: dishCost,
+          ingredients,
+          cookingSteps: rec.ingredients
+            .filter(ing => ing.cookingProcess && ing.cookingProcess.trim())
+            .map((ing, idx) => ({ stepNumber: idx + 1, text: ing.cookingProcess, ingredient: ing.name })),
+        };
+      });
+    });
+
+    return {
+      id: `hist_${dateStr.replace(/-/g, '')}`,
+      date: dateStr,
+      dateFormatted: dFormatted,
+      generatedAt: new Date().toISOString(),
+      totalPeople: totalCount,
+      chargeablePeople: chargeableCount,
+      nonChargeablePeople: nonChargeableCount,
+      departments: departments.map(d => ({
+        id: d.id,
+        name: d.name,
+        count: parseInt(countsMap[d.id], 10) || 0,
+        isChargeable: d.isChargeable !== false,
+      })),
+      totalCost: dayTotalCost,
+      meals: mealsObj,
+    };
+  }
+
   function handleConfirmGenerate() {
     store.saveDailyKitchen(generateDate, {
       date: generateDate,
@@ -113,10 +213,21 @@ export default function DailyKitchen() {
       menu: generateDayMenu,
     });
 
+    // Archive snapshot into Recipe History
+    const historySnapshot = buildDaySnapshot(
+      generateDate,
+      generateCounts,
+      generateTotalPeople,
+      generateChargeablePeople,
+      generateNonChargeablePeople,
+      generateDayMenu
+    );
+    store.addRecipeHistory(historySnapshot);
+
     setSelectedDate(generateDate);
     setDeptCounts(generateCounts);
     setShowGenerateModal(false);
-    setToastMessage(`✨ Recipes generated for ${generateDateFormatted}!`);
+    setToastMessage(`✨ Recipes generated & saved to History for ${generateDateFormatted}!`);
     setTimeout(() => setToastMessage(''), 3500);
   }
 
@@ -200,7 +311,34 @@ export default function DailyKitchen() {
       totalPeople,
       menu: dayMenu,
     });
-    setToastMessage('Daily kitchen plan saved successfully');
+
+    // Mirror to recipe history
+    const historySnapshot = buildDaySnapshot(
+      selectedDate,
+      deptCounts,
+      totalPeople,
+      chargeablePeople,
+      nonChargeablePeople,
+      dayMenu
+    );
+    store.addRecipeHistory(historySnapshot);
+
+    setToastMessage('Daily kitchen plan saved & synced to History');
+    setTimeout(() => setToastMessage(''), 3000);
+  }
+
+  // Export current active day to Excel (.xlsx)
+  function handleExportCurrentExcel() {
+    const currentSnapshot = buildDaySnapshot(
+      selectedDate,
+      deptCounts,
+      totalPeople,
+      chargeablePeople,
+      nonChargeablePeople,
+      dayMenu
+    );
+    exportDayToExcel(currentSnapshot);
+    setToastMessage(`📥 Excel downloaded for ${selectedDate}`);
     setTimeout(() => setToastMessage(''), 3000);
   }
 
@@ -261,12 +399,27 @@ export default function DailyKitchen() {
 
       {/* Screen Page Header */}
       <div className="page-header animate-in no-print">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div>
             <h1>Daily Kitchen</h1>
             <p>The main operations section. Pick date, adjust headcounts, and inspect scaled recipes with Hindi cooking steps.</p>
           </div>
-          <div className="flex gap-md">
+          <div className="flex gap-md" style={{ flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => navigate('/history')}
+              title="Open Recipe History section"
+            >
+              📜 History
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={handleExportCurrentExcel}
+              title="Download Excel spreadsheet for this day"
+              style={{ color: '#059669', borderColor: '#10b981', fontWeight: 600 }}
+            >
+              📥 Download Excel
+            </button>
             <button className="btn btn-secondary" onClick={copySummary} title="Copy summary for WhatsApp">
               📋 Copy Summary
             </button>
