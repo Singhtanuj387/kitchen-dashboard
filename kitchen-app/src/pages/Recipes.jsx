@@ -16,6 +16,8 @@ export default function Recipes() {
   const [showModal, setShowModal] = useState(false);
   const [showAddIngredient, setShowAddIngredient] = useState(false);
 
+  const [units, setUnits] = useState(() => store.getUnits());
+
   // Form state for new recipe
   const [recipeForm, setRecipeForm] = useState({
     name: '', standardYield: '30', yieldUnit: 'L', ingredients: []
@@ -41,6 +43,7 @@ export default function Recipes() {
   }
 
   function openNewRecipe() {
+    setUnits(store.getUnits());
     setRecipeForm({ name: '', standardYield: '30', yieldUnit: 'L', ingredients: [] });
     setShowModal(true);
   }
@@ -371,13 +374,13 @@ export default function Recipes() {
                     />
                     <select
                       className="form-select"
-                      style={{ width: 80 }}
+                      style={{ width: 85 }}
                       value={recipeForm.yieldUnit}
                       onChange={e => setRecipeForm({ ...recipeForm, yieldUnit: e.target.value })}
                     >
-                      <option value="L">L</option>
-                      <option value="Kg">Kg</option>
-                      <option value="pcs">pcs</option>
+                      {units.map(u => (
+                        <option key={u.id || u.symbol} value={u.symbol}>{u.symbol}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -478,10 +481,9 @@ export default function Recipes() {
                           value={ingForm.unit}
                           onChange={e => setIngForm({ ...ingForm, unit: e.target.value })}
                         >
-                          <option value="gm">gm</option>
-                          <option value="Kg">Kg</option>
-                          <option value="L">L</option>
-                          <option value="pcs">pcs</option>
+                          {units.map(u => (
+                            <option key={u.id || u.symbol} value={u.symbol}>{u.symbol}</option>
+                          ))}
                         </select>
                       </div>
                     </div>

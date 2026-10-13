@@ -18,6 +18,7 @@ const STORAGE_KEYS = {
   DAILY_KITCHEN: 'kd_daily_kitchen',
   AMOUNT_CLAIMS: 'kd_amount_claims',
   RECIPE_HISTORY: 'kd_recipe_history',
+  UNITS: 'kd_units',
 };
 
 // ── Helper Functions ──
@@ -80,7 +81,13 @@ const DEFAULT_MASTER_LIST = [
   { id: generateId(), name: 'Dry Coconut (Nariyal)', unit: 'pcs', pricePerUnit: 35 },
   { id: generateId(), name: 'Papad', unit: 'pcs', pricePerUnit: 2.5 },
   { id: generateId(), name: 'Banana (Kela)', unit: 'pcs', pricePerUnit: 6 },
-  { id: generateId(), name: 'Bread Loaf', unit: 'pcs', pricePerUnit: 40 },
+];
+
+const DEFAULT_UNITS = [
+  { id: 'unit_kg', symbol: 'Kg', name: 'Kilogram (Kg)', isDefault: true },
+  { id: 'unit_l', symbol: 'L', name: 'Litre (L)', isDefault: true },
+  { id: 'unit_gm', symbol: 'gm', name: 'Gram (gm)', isDefault: true },
+  { id: 'unit_pcs', symbol: 'pcs', name: 'Pieces (pcs)', isDefault: true },
 ];
 
 const DEFAULT_RECIPES = [
@@ -300,6 +307,64 @@ export const store = {
     const list = this.getMasterList().filter(i => i.id !== id);
     this.saveMasterList(list);
     return list;
+  },
+
+  // ── Units ──
+  getUnits() {
+    const units = loadFromStorage(STORAGE_KEYS.UNITS);
+    if (!units || units.length === 0) {
+      saveToStorage(STORAGE_KEYS.UNITS, DEFAULT_UNITS);
+      return DEFAULT_UNITS;
+    }
+    let updated = false;
+    DEFAULT_UNITS.forEach(du => {
+      if (!units.some(u => u.symbol.toLowerCase() === du.symbol.toLowerCase())) {
+        units.push(du);
+        updated = true;
+      }
+    });
+    // Scan master list for any units not yet in the list
+    const masterItems = loadFromStorage(STORAGE_KEYS.MASTER_LIST, []);
+    masterItems.forEach(item => {
+      if (item.unit && !units.some(u => u.symbol.toLowerCase() === item.unit.toLowerCase())) {
+        units.push({ id: generateId(), symbol: item.unit, name: item.unit, isDefault: false });
+        updated = true;
+      }
+    });
+    if (updated) {
+      saveToStorage(STORAGE_KEYS.UNITS, units);
+    }
+    return units;
+  },
+
+  saveUnits(units) {
+    saveToStorage(STORAGE_KEYS.UNITS, units);
+  },
+
+  addUnit({ symbol, name }) {
+    if (!symbol || !symbol.trim()) {
+      throw new Error('Unit symbol is required (e.g. pkt, dozen, tin)');
+    }
+    const cleanSymbol = symbol.trim();
+    const units = this.getUnits();
+    if (units.some(u => u.symbol.toLowerCase() === cleanSymbol.toLowerCase())) {
+      throw new Error(`Unit "${cleanSymbol}" already exists.`);
+    }
+    const newUnit = {
+      id: generateId(),
+      symbol: cleanSymbol,
+      name: (name && name.trim()) || cleanSymbol,
+      isDefault: false
+    };
+    units.push(newUnit);
+    this.saveUnits(units);
+    return newUnit;
+  },
+
+  deleteUnit(symbolOrId) {
+    const units = this.getUnits().filter(u => u.id !== symbolOrId && u.symbol.toLowerCase() !== symbolOrId.toLowerCase());
+    this.saveUnits(units);
+    return units;
   },
 
   // ── Recipes ──
@@ -551,6 +616,7 @@ export const store = {
       [STORAGE_KEYS.DAILY_KITCHEN]: loadFromStorage(STORAGE_KEYS.DAILY_KITCHEN, {}),
       [STORAGE_KEYS.AMOUNT_CLAIMS]: this.getAmountClaims(),
       [STORAGE_KEYS.RECIPE_HISTORY]: this.getRecipeHistory(),
+      [STORAGE_KEYS.UNITS]: this.getUnits(),
     };
 
     const promises = Object.entries(payload).map(([k, v]) => syncDocToFirestore('kitchen_data', k, v));
