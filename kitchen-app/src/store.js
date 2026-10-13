@@ -160,7 +160,7 @@ const DEFAULT_RECIPES = [
 ];
 
 const DEFAULT_DEPARTMENTS = [
-  { id: 'dept_temple', name: 'Temple + KH(10)', defaultCount: 60, isChargeable: false },
+  { id: 'dept_temple', name: 'Temple', defaultCount: 60, isChargeable: false },
   { id: 'dept_abhay', name: 'Abhay Hostel', defaultCount: 35, isChargeable: true },
   { id: 'dept_bit', name: 'BIT Voice', defaultCount: 7, isChargeable: true },
   { id: 'dept_congregation', name: 'Congregation', defaultCount: 45, isChargeable: true },
@@ -192,7 +192,7 @@ const DEFAULT_AMOUNT_CLAIMS = [
   {
     id: generateId(),
     date: '2026-10-11',
-    dept: 'Temple + KH(10)',
+    dept: 'Temple',
     menu: 'Jeera Rice, Sambhar',
     menuCost: 0,
     count: 50,
@@ -228,7 +228,7 @@ const DEFAULT_AMOUNT_CLAIMS = [
   {
     id: generateId(),
     date: '2026-10-14',
-    dept: 'Temple + KH(10)',
+    dept: 'Temple',
     menu: 'Alu Bagan Badi, Jeera Rice, Dal',
     menuCost: 0,
     count: 60,
@@ -371,8 +371,12 @@ export const store = {
     }
     let updated = false;
     depts.forEach(d => {
+      if (d.name.includes('KH(10)')) {
+        d.name = 'Temple';
+        updated = true;
+      }
       if (d.isChargeable === undefined) {
-        if (d.name.toLowerCase().includes('temple') || d.name.toLowerCase().includes('kh(10)')) {
+        if (d.name.toLowerCase().includes('temple')) {
           d.isChargeable = false;
         } else {
           d.isChargeable = true;
@@ -435,7 +439,11 @@ export const store = {
     }
     let updated = false;
     claims.forEach(c => {
-      if (c.dept.toLowerCase().includes('temple') || c.dept.toLowerCase().includes('kh(10)')) {
+      if (c.dept.includes('KH(10)')) {
+        c.dept = 'Temple';
+        updated = true;
+      }
+      if (c.dept.toLowerCase().includes('temple')) {
         if (c.paymentStatus !== 'Non-Chargeable' || c.menuCost !== 0) {
           c.paymentStatus = 'Non-Chargeable';
           c.menuCost = 0;

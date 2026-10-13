@@ -302,7 +302,7 @@ export default function Departments() {
                   <input
                     type="text"
                     className="form-input"
-                    placeholder="e.g., Temple + KH(10)"
+                    placeholder="e.g., Temple"
                     value={form.name}
                     onChange={e => setForm({ ...form, name: e.target.value })}
                     autoFocus

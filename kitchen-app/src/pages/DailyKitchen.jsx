@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { store, getYearMonth, getDateString, calculateRequiredQty, formatNumber, findMasterItem } from '../store';
 
 export default function DailyKitchen() {
@@ -12,9 +12,24 @@ export default function DailyKitchen() {
   const [activeTab, setActiveTab] = useState('all');
   const [toastMessage, setToastMessage] = useState('');
 
+  // Generate Next Day Modal state
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [generateDate, setGenerateDate] = useState('');
+  const [generateCounts, setGenerateCounts] = useState({});
+
   const departments = store.getDepartments();
   const recipes = store.getRecipes();
   const masterList = store.getMasterList();
+
+  // Load saved counts if available when selectedDate changes
+  useEffect(() => {
+    const saved = store.getDailyKitchen(selectedDate);
+    if (saved && saved.departments && saved.departments.length > 0) {
+      const counts = {};
+      saved.departments.forEach(d => { counts[d.id] = d.count; });
+      setDeptCounts(counts);
+    }
+  }, [selectedDate]);
 
   // Get the menu for selected date
   const dateObj = new Date(selectedDate);
@@ -37,6 +52,73 @@ export default function DailyKitchen() {
       .filter(d => d.isChargeable === false)
       .reduce((sum, d) => sum + (parseInt(deptCounts[d.id], 10) || 0), 0);
   }, [departments, deptCounts]);
+
+  // Generate Target Calculations
+  const generateTargetDateObj = new Date(generateDate || selectedDate);
+  const generateYearMonth = getYearMonth(generateTargetDateObj);
+  const generateDayMenu = store.getMonthlyMenu(generateYearMonth)[generateTargetDateObj.getDate()] || {};
+
+  const generateTotalPeople = useMemo(() => {
+    return Object.values(generateCounts).reduce((sum, c) => sum + (parseInt(c, 10) || 0), 0);
+  }, [generateCounts]);
+
+  const generateChargeablePeople = useMemo(() => {
+    return departments
+      .filter(d => d.isChargeable !== false)
+      .reduce((sum, d) => sum + (parseInt(generateCounts[d.id], 10) || 0), 0);
+  }, [departments, generateCounts]);
+
+  const generateNonChargeablePeople = useMemo(() => {
+    return departments
+      .filter(d => d.isChargeable === false)
+      .reduce((sum, d) => sum + (parseInt(generateCounts[d.id], 10) || 0), 0);
+  }, [departments, generateCounts]);
+
+  const generateDateFormatted = generateTargetDateObj.toLocaleDateString('en-IN', {
+    weekday: 'long',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+
+  function openGenerateModal() {
+    const next = new Date(selectedDate);
+    next.setDate(next.getDate() + 1);
+    const nextDateStr = getDateString(next);
+    setGenerateDate(nextDateStr);
+
+    const saved = store.getDailyKitchen(nextDateStr);
+    const initialCounts = {};
+    departments.forEach(d => {
+      if (saved && saved.departments && saved.departments.length > 0) {
+        const found = saved.departments.find(item => item.id === d.id);
+        initialCounts[d.id] = found ? found.count : d.defaultCount;
+      } else {
+        initialCounts[d.id] = deptCounts[d.id] ?? d.defaultCount;
+      }
+    });
+    setGenerateCounts(initialCounts);
+    setShowGenerateModal(true);
+  }
+
+  function handleConfirmGenerate() {
+    store.saveDailyKitchen(generateDate, {
+      date: generateDate,
+      departments: departments.map(d => ({
+        id: d.id,
+        name: d.name,
+        count: parseInt(generateCounts[d.id], 10) || 0
+      })),
+      totalPeople: generateTotalPeople,
+      menu: generateDayMenu,
+    });
+
+    setSelectedDate(generateDate);
+    setDeptCounts(generateCounts);
+    setShowGenerateModal(false);
+    setToastMessage(`✨ Recipes generated for ${generateDateFormatted}!`);
+    setTimeout(() => setToastMessage(''), 3500);
+  }
 
   // Calculate full recipe details for a dish
   function calculateDishDetails(dishItem) {
@@ -124,7 +206,7 @@ export default function DailyKitchen() {
 
   // Copy summary to clipboard
   function copySummary() {
-    let summaryText = `*KITCHEN PRODUCTION SHEET*\nDate: ${dateFormatted}\nTotal Headcount: ${totalPeople} people (${chargeablePeople} billable, ${nonChargeablePeople} Temple/KH non-chargeable)\n\n`;
+    let summaryText = `*KITCHEN PRODUCTION SHEET*\nDate: ${dateFormatted}\nTotal Headcount: ${totalPeople} people (${chargeablePeople} billable, ${nonChargeablePeople} Temple non-chargeable)\n\n`;
     ['breakfast', 'lunch', 'dinner'].forEach(m => {
       const dishes = allMealData[m] || [];
       if (dishes.length > 0) {
@@ -236,32 +318,22 @@ export default function DailyKitchen() {
             </div>
           </div>
 
-          <div className="flex items-center gap-md">
+          <div>
             <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => {
-                const d = new Date(selectedDate);
-                d.setDate(d.getDate() - 1);
-                setSelectedDate(getDateString(d));
+              className="btn btn-primary"
+              onClick={openGenerateModal}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '9px 20px',
+                fontWeight: 600,
+                fontSize: 14,
+                borderRadius: 'var(--radius-md)',
+                boxShadow: 'var(--shadow-sm)'
               }}
             >
-              ← Prev Day
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setSelectedDate(getDateString(new Date()))}
-            >
-              Today
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => {
-                const d = new Date(selectedDate);
-                d.setDate(d.getDate() + 1);
-                setSelectedDate(getDateString(d));
-              }}
-            >
-              Next Day →
+              <span>✨</span> Generate Next Day Recipes
             </button>
           </div>
         </div>
@@ -289,14 +361,7 @@ export default function DailyKitchen() {
             {departments.map(dept => (
               <div key={dept.id} className="dept-input-card">
                 <div style={{ flex: 1 }}>
-                  <div className="flex items-center gap-xs flex-wrap">
-                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{dept.name}</span>
-                    {dept.isChargeable === false && (
-                      <span className="badge badge-neutral" style={{ fontSize: 10, padding: '1px 6px' }}>
-                        Non-Chargeable
-                      </span>
-                    )}
-                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{dept.name}</div>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {dept.defaultCount} people</div>
                 </div>
                 <input
@@ -507,6 +572,159 @@ export default function DailyKitchen() {
           </div>
         );
       })}
+
+      {/* Generate Next Day Modal */}
+      {showGenerateModal && (
+        <div className="modal-overlay" onClick={() => setShowGenerateModal(false)}>
+          <div className="modal modal-lg" onClick={e => e.stopPropagation()} style={{ maxWidth: 620 }}>
+            <div className="modal-header">
+              <div>
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span>✨</span> Generate Next Day Recipes
+                </h3>
+                <p style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  Set department-wise headcounts to automatically calculate yields, ingredient quantities, and batch costs.
+                </p>
+              </div>
+              <button className="btn btn-ghost btn-icon" onClick={() => setShowGenerateModal(false)}>✕</button>
+            </div>
+
+            <div className="modal-body">
+              <div className="flex flex-col gap-lg">
+                {/* Target Date Selector */}
+                <div className="form-group" style={{ background: 'var(--accent-subtle)', padding: '12px 16px', borderRadius: 'var(--radius-md)' }}>
+                  <div className="flex items-center justify-between flex-wrap gap-sm">
+                    <div>
+                      <label className="form-label" style={{ margin: 0, fontWeight: 600, color: 'var(--accent)' }}>
+                        Target Production Date
+                      </label>
+                      <div style={{ fontSize: 13, color: 'var(--text-primary)', marginTop: 2, fontWeight: 600 }}>
+                        {generateDateFormatted}
+                      </div>
+                    </div>
+                    <input
+                      type="date"
+                      className="form-input"
+                      value={generateDate}
+                      onChange={e => setGenerateDate(e.target.value)}
+                      style={{ width: 170, background: '#fff' }}
+                    />
+                  </div>
+                </div>
+
+                {/* Scheduled Dishes Preview */}
+                <div style={{
+                  padding: '12px 16px',
+                  background: 'var(--bg-card)',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border-subtle)',
+                }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+                    📋 Scheduled Menu for {new Date(generateDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                  </div>
+                  {['breakfast', 'lunch', 'dinner'].map(meal => {
+                    const dishes = generateDayMenu[meal] || [];
+                    if (dishes.length === 0) return null;
+                    return (
+                      <div key={meal} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 13, marginBottom: 4 }}>
+                        <span style={{ fontWeight: 600, textTransform: 'capitalize', width: 75, color: 'var(--text-secondary)' }}>
+                          {meal}:
+                        </span>
+                        <span style={{ color: 'var(--text-primary)' }}>
+                          {dishes.map(d => `${d.dish} (${d.serving} ${recipes.find(r => r.name === d.dish)?.yieldUnit === 'pcs' ? 'pcs' : 'ml'})`).join(', ')}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {!generateDayMenu.breakfast?.length && !generateDayMenu.lunch?.length && !generateDayMenu.dinner?.length && (
+                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                      No dishes scheduled yet in Monthly Menu for this date. (Recipes scheduled in Monthly Menu will scale automatically).
+                    </div>
+                  )}
+                </div>
+
+                {/* Department-wise Headcount Inputs */}
+                <div>
+                  <div className="flex items-center justify-between mb-sm">
+                    <div>
+                      <label className="form-label" style={{ margin: 0, fontWeight: 700, fontSize: 14 }}>
+                        Department-wise Headcounts
+                      </label>
+                      <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                        Enter expected headcount for each department:
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        const reset = {};
+                        departments.forEach(d => { reset[d.id] = d.defaultCount; });
+                        setGenerateCounts(reset);
+                      }}
+                    >
+                      Reset Defaults
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 'var(--space-md)' }}>
+                    {departments.map(dept => (
+                      <div key={dept.id} className="dept-input-card" style={{ padding: '10px 14px' }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{dept.name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {dept.defaultCount} people</div>
+                        </div>
+                        <input
+                          type="number"
+                          className="form-input"
+                          value={generateCounts[dept.id] ?? ''}
+                          onChange={e => setGenerateCounts(prev => ({ ...prev, [dept.id]: e.target.value }))}
+                          style={{ width: 75, textAlign: 'center', fontWeight: 700, fontSize: 14 }}
+                          min="0"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Headcount Live Total Summary */}
+                <div style={{
+                  padding: '12px 16px',
+                  background: 'var(--bg-tertiary)',
+                  borderRadius: 'var(--radius-md)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between'
+                }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Total Production Headcount</div>
+                    <div style={{ fontSize: 20, fontWeight: 800, color: 'var(--accent)' }}>
+                      {generateTotalPeople} people
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: 12, color: 'var(--text-secondary)' }}>
+                    <div>{generateChargeablePeople} billable</div>
+                    <div style={{ color: 'var(--text-tertiary)' }}>{generateNonChargeablePeople} Temple</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowGenerateModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleConfirmGenerate}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}
+              >
+                <span>✨</span> Generate Recipes & Production Plan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

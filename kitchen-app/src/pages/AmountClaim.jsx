@@ -132,7 +132,7 @@ export default function AmountClaim() {
     <div className="page-container">
       <div className="page-header animate-in">
         <h1>Amount Claim</h1>
-        <p>Track what each department owes. Temple + KH(10) is non-chargeable (exempt from billing).</p>
+        <p>Track what each department owes. Temple is non-chargeable (exempt from billing).</p>
       </div>
 
       <div className="stat-grid animate-in-delayed">
