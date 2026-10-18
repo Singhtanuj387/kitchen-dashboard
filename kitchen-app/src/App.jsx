@@ -7,6 +7,9 @@ import Departments from './pages/Departments';
 import DailyKitchen from './pages/DailyKitchen';
 import AmountClaim from './pages/AmountClaim';
 import History from './pages/History';
+import CostSettings from './pages/CostSettings';
+import MonthlyReport from './pages/MonthlyReport';
+import { Purchasing, Expenses } from './pages/Purchasing';
 import { isFirebaseConfigured } from './firebase';
 import { store } from './store';
 
@@ -18,10 +21,17 @@ const NAV_ITEMS = [
   { path: '/monthly-menu', label: 'Monthly Menu', icon: '📅', section: 'Planning' },
   { path: '/departments', label: 'Departments', icon: '🏢', section: 'Planning' },
   { path: '/amount-claim', label: 'Amount Claim', icon: '💰', section: 'Finance' },
+  { path: '/monthly-report', label: 'Monthly Report', icon: '📈', section: 'Finance' },
+  { path: '/purchasing', label: 'Purchasing', icon: '🛒', section: 'Finance' },
+  { path: '/expenses', label: 'Expenses', icon: '🧾', section: 'Finance' },
+  { path: '/cost-settings', label: 'Cost Settings', icon: '⚙️', section: 'Finance' },
 ];
 
 export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('kd_theme') || 'light');
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    () => localStorage.getItem('kd_sidebar_collapsed') === 'true'
+  );
   const isCloudActive = isFirebaseConfigured();
 
   useEffect(() => {
@@ -41,6 +51,14 @@ export default function App() {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
   }
 
+  function toggleSidebar() {
+    setIsSidebarCollapsed(prev => {
+      const next = !prev;
+      localStorage.setItem('kd_sidebar_collapsed', String(next));
+      return next;
+    });
+  }
+
   // Group nav items by section
   const sections = {};
   NAV_ITEMS.forEach(item => {
@@ -52,13 +70,22 @@ export default function App() {
     <HashRouter>
       <div className="app-layout">
         {/* Sidebar */}
-        <aside className="sidebar">
+        <aside className={`sidebar ${isSidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
           <div className="sidebar-header">
             <div className="sidebar-logo">K</div>
             <div>
               <div className="sidebar-title">Kitchen</div>
               <div className="sidebar-subtitle">Dashboard</div>
             </div>
+            <button
+              type="button"
+              className="sidebar-collapse-btn"
+              onClick={toggleSidebar}
+              aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Minimize sidebar'}
+              title={isSidebarCollapsed ? 'Expand sidebar' : 'Minimize sidebar'}
+            >
+              {isSidebarCollapsed ? '›' : '‹'}
+            </button>
           </div>
           <nav className="sidebar-nav">
             {Object.entries(sections).map(([section, items]) => (
@@ -69,9 +96,10 @@ export default function App() {
                     key={item.path}
                     to={item.path}
                     className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                    title={isSidebarCollapsed ? item.label : undefined}
                   >
                     <span className="nav-icon">{item.icon}</span>
-                    {item.label}
+                    <span className="nav-label">{item.label}</span>
                   </NavLink>
                 ))}
               </div>
@@ -129,6 +157,10 @@ export default function App() {
             <Route path="/monthly-menu" element={<MonthlyMenu />} />
             <Route path="/departments" element={<Departments />} />
             <Route path="/amount-claim" element={<AmountClaim />} />
+            <Route path="/monthly-report" element={<MonthlyReport />} />
+            <Route path="/purchasing" element={<Purchasing />} />
+            <Route path="/expenses" element={<Expenses />} />
+            <Route path="/cost-settings" element={<CostSettings />} />
           </Routes>
         </main>
       </div>

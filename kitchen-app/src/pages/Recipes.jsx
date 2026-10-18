@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { store, calculateRequiredQty, formatNumber, findMasterItem } from '../store';
+import { store, calculateRequiredQty, formatNumber, findMasterItem, getRecipeServingUnit, calculateIngredientCost, getRecipeProcedureSteps } from '../store';
 
 export default function Recipes() {
   const [recipes, setRecipes] = useState(() => store.getRecipes());
@@ -15,18 +15,20 @@ export default function Recipes() {
   const [searchFilter, setSearchFilter] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [showAddIngredient, setShowAddIngredient] = useState(false);
+  const [editingRecipe, setEditingRecipe] = useState(null);
 
   const [units, setUnits] = useState(() => store.getUnits());
 
   // Form state for new recipe
   const [recipeForm, setRecipeForm] = useState({
-    name: '', standardYield: '30', yieldUnit: 'L', ingredients: []
+    name: '', standardYield: '30', yieldUnit: 'L', servingUnit: 'ml', ingredients: [], procedureSteps: []
   });
   const [ingForm, setIngForm] = useState({
     name: '', standardQty: '', unit: 'gm', cookingProcess: ''
   });
 
   const masterList = store.getMasterList();
+  const costMultiplier = store.getCostSettings().multiplier;
 
   const filteredRecipes = useMemo(() => {
     return recipes.filter(r => r.name.toLowerCase().includes(searchFilter.toLowerCase()));
@@ -40,11 +42,64 @@ export default function Recipes() {
     } else {
       setRequiredYield(recipe.standardYield.toString());
     }
+
+  }
+
+  function addProcedureStep() {
+    setRecipeForm(prev => ({
+      ...prev,
+      procedureSteps: [...prev.procedureSteps, { english: '', hindi: '', ingredients: [] }],
+    }));
+  }
+
+  function updateProcedureStep(index, field, value) {
+    setRecipeForm(prev => ({
+      ...prev,
+      procedureSteps: prev.procedureSteps.map((step, stepIndex) =>
+        stepIndex === index ? { ...step, [field]: value } : step
+      ),
+    }));
+  }
+
+  function toggleProcedureIngredient(stepIndex, ingredientName) {
+    setRecipeForm(prev => ({
+      ...prev,
+      procedureSteps: prev.procedureSteps.map((step, index) => {
+        if (index !== stepIndex) return step;
+        const ingredients = step.ingredients.includes(ingredientName)
+          ? step.ingredients.filter(name => name !== ingredientName)
+          : [...step.ingredients, ingredientName];
+        return { ...step, ingredients };
+      }),
+    }));
+  }
+
+  function removeProcedureStep(index) {
+    setRecipeForm(prev => ({
+      ...prev,
+      procedureSteps: prev.procedureSteps.filter((_, stepIndex) => stepIndex !== index),
+    }));
   }
 
   function openNewRecipe() {
     setUnits(store.getUnits());
-    setRecipeForm({ name: '', standardYield: '30', yieldUnit: 'L', ingredients: [] });
+    setEditingRecipe(null);
+    setRecipeForm({ name: '', standardYield: '30', yieldUnit: 'L', servingUnit: 'ml', ingredients: [], procedureSteps: [] });
+    setShowModal(true);
+  }
+
+  function openEditRecipe(recipe) {
+    setUnits(store.getUnits());
+    setEditingRecipe(recipe);
+    setRecipeForm({
+      name: recipe.name,
+      standardYield: recipe.standardYield.toString(),
+      yieldUnit: recipe.yieldUnit,
+      servingUnit: getRecipeServingUnit(recipe),
+      ingredients: recipe.ingredients.map(ingredient => ({ ...ingredient })),
+      procedureSteps: getRecipeProcedureSteps(recipe),
+    });
+    setShowAddIngredient(false);
     setShowModal(true);
   }
 
@@ -87,15 +142,37 @@ export default function Recipes() {
     const data = {
       name: recipeForm.name.trim(),
       standardYield: parseFloat(recipeForm.standardYield),
-      yieldUnit: recipeForm.yieldUnit,
+      yieldUnit: recipeForm.servingUnit === 'pieces' ? 'pcs' : 'L',
+      servingUnit: recipeForm.servingUnit,
       ingredients: recipeForm.ingredients,
+      procedureSteps: recipeForm.procedureSteps
+        .filter(step => step.english.trim() || step.hindi.trim())
+        .map((step, index) => ({ ...step, stepNumber: index + 1 })),
     };
-    const created = store.addRecipe(data);
+    const saved = editingRecipe
+      ? store.updateRecipe(editingRecipe.id, data).find(recipe => recipe.id === editingRecipe.id)
+      : store.addRecipe(data);
     const updatedList = store.getRecipes();
     setRecipes(updatedList);
-    setSelectedRecipe(created);
-    setRequiredYield(created.standardYield.toString());
+    setSelectedRecipe(saved);
+    setRequiredYield(saved.standardYield.toString());
+    setEditingRecipe(null);
     setShowModal(false);
+  }
+
+  function toggleRecipeServingUnit(recipe) {
+    const servingUnit = getRecipeServingUnit(recipe) === 'pieces' ? 'ml' : 'pieces';
+    const updated = store.updateRecipe(recipe.id, {
+      servingUnit,
+      yieldUnit: servingUnit === 'pieces' ? 'pcs' : 'L',
+    });
+    const updatedList = store.getRecipes();
+    setRecipes(updatedList);
+    const updatedRecipe = updated.find(item => item.id === recipe.id);
+    if (selectedRecipe?.id === recipe.id) {
+      setSelectedRecipe(updatedRecipe);
+      setRequiredYield(updatedRecipe.standardYield.toString());
+    }
   }
 
   function deleteRecipe(id) {
@@ -109,17 +186,6 @@ export default function Recipes() {
 
   const reqYield = parseFloat(requiredYield) || 0;
 
-  // Group cooking steps from selected recipe
-  function getCookingSteps(recipe) {
-    return recipe.ingredients
-      .filter(ing => ing.cookingProcess && ing.cookingProcess.trim())
-      .map((ing, idx) => ({
-        stepNumber: idx + 1,
-        text: ing.cookingProcess,
-        ingredient: ing.name,
-      }));
-  }
-
   // Calculate total cost for selected recipe
   function getRecipeCost(recipe, yield_) {
     let total = 0;
@@ -127,11 +193,16 @@ export default function Recipes() {
       const rq = calculateRequiredQty(ing.standardQty, yield_, recipe.standardYield);
       const master = findMasterItem(ing.name, masterList);
       if (master) {
-        total += rq * master.pricePerUnit;
+        total += calculateIngredientCost(rq, master.pricePerUnit, ing.unit, master.unit);
       }
     }
     return total;
   }
+
+  const ingredientCost = selectedRecipe ? getRecipeCost(selectedRecipe, reqYield) : 0;
+  const adjustedCost = ingredientCost * costMultiplier;
+  const selectedServingUnit = selectedRecipe ? getRecipeServingUnit(selectedRecipe) : 'ml';
+  const selectedYieldLabel = selectedServingUnit === 'pieces' ? 'pcs' : 'L';
 
   return (
     <div className="page-container">
@@ -187,13 +258,38 @@ export default function Recipes() {
                   >
                     <div className="flex items-center justify-between">
                       <div style={{ flex: 1, marginRight: 8 }}>
-                        <div style={{ fontWeight: 600, fontSize: 14, color: selectedRecipe?.id === recipe.id ? 'var(--accent)' : 'var(--text-primary)' }}>
-                          {recipe.name}
+                        <div className="flex items-center gap-sm" style={{ color: selectedRecipe?.id === recipe.id ? 'var(--accent)' : 'var(--text-primary)' }}>
+                          <div style={{ fontWeight: 600, fontSize: 14 }}>
+                            {recipe.name}
+                          </div>
+                          <button
+                            type="button"
+                            className={`unit-toggle ${getRecipeServingUnit(recipe) === 'pieces' ? 'active' : ''}`}
+                            onClick={e => {
+                              e.stopPropagation();
+                              toggleRecipeServingUnit(recipe);
+                            }}
+                            aria-label={`${recipe.name} served by ${getRecipeServingUnit(recipe) === 'pieces' ? 'pieces' : 'millilitres'}. Toggle serving unit`}
+                            title="Toggle between ml and pieces"
+                          >
+                            {getRecipeServingUnit(recipe) === 'pieces' ? 'pcs' : 'ml'}
+                          </button>
                         </div>
                         <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 3 }}>
-                          {recipe.ingredients.length} items · Base Yield: {recipe.standardYield} {recipe.yieldUnit}
+                          {recipe.ingredients.length} items · Base Yield: {recipe.standardYield} {recipe.yieldUnit} · Served by {getRecipeServingUnit(recipe) === 'pieces' ? 'pieces' : 'ml'}
                         </div>
                       </div>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        title={`Edit ${recipe.name}`}
+                        aria-label={`Edit ${recipe.name}`}
+                        onClick={e => {
+                          e.stopPropagation();
+                          openEditRecipe(recipe);
+                        }}
+                      >
+                        Edit
+                      </button>
                       <button
                         className="btn btn-ghost btn-sm"
                         style={{ color: 'var(--danger)', padding: '4px 8px', fontSize: 12 }}
@@ -211,6 +307,7 @@ export default function Recipes() {
                 ))
               )}
             </div>
+
           </div>
         </div>
 
@@ -249,7 +346,8 @@ export default function Recipes() {
                 </div>
               </div>
 
-              {/* Ingredients Table with Dual Quantities */}
+              {/* Spreadsheet-style ingredients and procedure */}
+              <div className="recipe-spreadsheet">
               <div className="table-container">
                 <table>
                   <thead>
@@ -264,7 +362,9 @@ export default function Recipes() {
                   </thead>
                   <tbody>
                     <tr style={{ background: 'var(--accent-subtle)' }}>
-                      <td style={{ fontWeight: 700, color: 'var(--accent)' }}>Yield (Total Batch Volume)</td>
+                      <td style={{ fontWeight: 700, color: 'var(--accent)' }}>
+                        Yield (Total Batch {selectedServingUnit === 'pieces' ? 'Quantity' : 'Volume'})
+                      </td>
                       <td className="text-right font-mono" style={{ fontWeight: 700 }}>{selectedRecipe.standardYield}</td>
                       <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--accent)' }}>{formatNumber(reqYield)}</td>
                       <td><strong>{selectedRecipe.yieldUnit}</strong></td>
@@ -275,7 +375,7 @@ export default function Recipes() {
                       const calculatedQty = calculateRequiredQty(ing.standardQty, reqYield, selectedRecipe.standardYield);
                       const master = findMasterItem(ing.name, masterList);
                       const rate = master ? master.pricePerUnit : 0;
-                      const amount = calculatedQty * rate;
+                      const amount = calculateIngredientCost(calculatedQty, rate, ing.unit, master?.unit);
                       return (
                         <tr key={idx}>
                           <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{ing.name}</td>
@@ -295,37 +395,42 @@ export default function Recipes() {
                     })}
                     <tr style={{ background: 'var(--bg-tertiary)' }}>
                       <td colSpan={5} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
-                        Total Recipe Cost (at {formatNumber(reqYield)} {selectedRecipe.yieldUnit})
+                        Ingredient Cost (at {formatNumber(reqYield)} {selectedYieldLabel})
                       </td>
                       <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--success)', fontSize: 16 }}>
-                        ₹{formatNumber(getRecipeCost(selectedRecipe, reqYield))}
+                        ₹{formatNumber(ingredientCost)}
+                      </td>
+                    </tr>
+                    <tr style={{ background: 'var(--accent-subtle)' }}>
+                      <td colSpan={5} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                        Adjusted Cost ({formatNumber(costMultiplier, 2)}x)
+                      </td>
+                      <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: 16 }}>
+                        ₹{formatNumber(adjustedCost)}
                       </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
 
-              {/* Cooking Process (विधि) */}
-              {getCookingSteps(selectedRecipe).length > 0 && (
-                <div className="card-body" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 'var(--space-md)', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span>🍳</span> Cooking Process (बनाने की विधि)
-                  </div>
-                  <div className="recipe-steps-list">
-                    {getCookingSteps(selectedRecipe).map((step) => (
-                      <div key={step.stepNumber} className="recipe-step">
+              {getRecipeProcedureSteps(selectedRecipe).length > 0 && (
+                <div className="recipe-procedure-panel">
+                  <div className="recipe-procedure-heading">🍳 Cooking Process / बनाने की विधि</div>
+                  <div className="recipe-procedure-list">
+                    {getRecipeProcedureSteps(selectedRecipe).map(step => (
+                      <div className="recipe-procedure-row" key={step.stepNumber}>
                         <div className="step-number">{step.stepNumber}</div>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: 3, fontWeight: 600 }}>
-                            {step.ingredient}
-                          </div>
-                          <div className="step-text">{step.text}</div>
+                        <div className="recipe-procedure-copy">
+                          <div className="recipe-procedure-english">{step.english || '—'}</div>
+                          <div className="recipe-procedure-hindi">{step.hindi || '—'}</div>
+                          <div className="recipe-procedure-ingredients">{step.ingredients.join(', ') || 'General step'}</div>
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
+              </div>
             </div>
           </div>
         )}
@@ -341,12 +446,12 @@ export default function Recipes() {
         )}
       </div>
 
-      {/* Add Recipe Modal */}
+      {/* Create / Edit Recipe Modal */}
       {showModal && (
         <div className="modal-overlay" onClick={() => setShowModal(false)}>
           <div className="modal modal-lg" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>Create New Recipe</h3>
+              <h3>{editingRecipe ? 'Edit Recipe' : 'Create New Recipe'}</h3>
               <button className="btn btn-ghost btn-icon" onClick={() => setShowModal(false)}>✕</button>
             </div>
             <div className="modal-body">
@@ -362,7 +467,7 @@ export default function Recipes() {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Standard Yield (Base Volume)</label>
+                  <label className="form-label">Standard Yield (Base {recipeForm.servingUnit === 'pieces' ? 'Quantity' : 'Volume'})</label>
                   <div className="flex gap-sm">
                     <input
                       type="number"
@@ -375,12 +480,15 @@ export default function Recipes() {
                     <select
                       className="form-select"
                       style={{ width: 85 }}
-                      value={recipeForm.yieldUnit}
-                      onChange={e => setRecipeForm({ ...recipeForm, yieldUnit: e.target.value })}
+                      value={recipeForm.servingUnit}
+                      onChange={e => setRecipeForm({
+                        ...recipeForm,
+                        servingUnit: e.target.value,
+                        yieldUnit: e.target.value === 'pieces' ? 'pcs' : 'L',
+                      })}
                     >
-                      {units.map(u => (
-                        <option key={u.id || u.symbol} value={u.symbol}>{u.symbol}</option>
-                      ))}
+                      <option value="ml">ml</option>
+                      <option value="pieces">pcs</option>
                     </select>
                   </div>
                 </div>
@@ -413,7 +521,6 @@ export default function Recipes() {
                           <th>Item</th>
                           <th className="text-right">Qty</th>
                           <th>Unit</th>
-                          <th>Cooking Step (Hindi)</th>
                           <th></th>
                         </tr>
                       </thead>
@@ -423,7 +530,6 @@ export default function Recipes() {
                             <td style={{ fontWeight: 500 }}>{ing.name}</td>
                             <td className="text-right font-mono">{ing.standardQty}</td>
                             <td><span className="badge badge-neutral">{ing.unit}</span></td>
-                            <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{ing.cookingProcess || '—'}</td>
                             <td>
                               <button
                                 className="btn btn-ghost btn-sm"
@@ -437,6 +543,56 @@ export default function Recipes() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="recipe-procedure-editor">
+                <div className="flex items-center justify-between mb-sm">
+                  <div>
+                    <label className="form-label" style={{ margin: 0 }}>Procedure Steps</label>
+                    <div className="form-hint">One step can cover multiple ingredients. Add English and Hindi for each step.</div>
+                  </div>
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={addProcedureStep}>+ Add Step</button>
+                </div>
+                {recipeForm.procedureSteps.length === 0 ? (
+                  <div className="recipe-procedure-empty">No procedure steps yet. Add a step after adding ingredients.</div>
+                ) : (
+                  <div className="recipe-procedure-form-list">
+                    {recipeForm.procedureSteps.map((step, index) => (
+                      <div className="recipe-procedure-form-row" key={index}>
+                        <div className="step-number">{index + 1}</div>
+                        <div className="recipe-procedure-fields">
+                          <input
+                            className="form-input"
+                            placeholder="English procedure step"
+                            value={step.english}
+                            onChange={e => updateProcedureStep(index, 'english', e.target.value)}
+                          />
+                          <textarea
+                            className="form-textarea"
+                            placeholder="हिंदी में प्रक्रिया लिखें"
+                            rows={2}
+                            value={step.hindi}
+                            onChange={e => updateProcedureStep(index, 'hindi', e.target.value)}
+                          />
+                          <div className="procedure-ingredient-picker">
+                            <span className="form-hint">Ingredients covered:</span>
+                            {recipeForm.ingredients.map(ingredient => (
+                              <label className="procedure-ingredient-option" key={ingredient.name}>
+                                <input
+                                  type="checkbox"
+                                  checked={step.ingredients.includes(ingredient.name)}
+                                  onChange={() => toggleProcedureIngredient(index, ingredient.name)}
+                                />
+                                {ingredient.name}
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                        <button type="button" className="btn btn-ghost btn-sm" style={{ color: 'var(--danger)' }} onClick={() => removeProcedureStep(index)}>✕</button>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -516,7 +672,7 @@ export default function Recipes() {
                 onClick={saveRecipe}
                 disabled={!recipeForm.name.trim() || !recipeForm.standardYield || recipeForm.ingredients.length === 0}
               >
-                Save Recipe
+                {editingRecipe ? 'Update Recipe' : 'Save Recipe'}
               </button>
             </div>
           </div>

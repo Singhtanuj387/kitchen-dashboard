@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { store, getYearMonth } from '../store';
+import { store, getYearMonth, getRecipeServingUnit } from '../store';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -7,7 +7,11 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 
 export default function MonthlyMenu() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [showModal, setShowModal] = useState(false);
+  const [showCopyMonthModal, setShowCopyMonthModal] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
+  const [copyMonthTarget, setCopyMonthTarget] = useState('');
+  const [copyDayTarget, setCopyDayTarget] = useState('');
+  const [toastMessage, setToastMessage] = useState('');
   const [menuForm, setMenuForm] = useState({
     breakfast: [{ dish: '', serving: '' }],
     lunch: [{ dish: '', serving: '' }],
@@ -15,6 +19,7 @@ export default function MonthlyMenu() {
   });
 
   const recipes = store.getRecipes();
+  const departments = store.getDepartments();
   const yearMonth = getYearMonth(currentDate);
   const [menu, setMenu] = useState(() => store.getMonthlyMenu(yearMonth));
 
@@ -66,7 +71,7 @@ export default function MonthlyMenu() {
   function addDish(mealType) {
     setMenuForm(prev => ({
       ...prev,
-      [mealType]: [...prev[mealType], { dish: '', serving: '' }]
+      [mealType]: [...prev[mealType], { dish: '', serving: '', departments: [] }]
     }));
   }
 
@@ -93,6 +98,7 @@ export default function MonthlyMenu() {
         cleanMenu[meal] = dishes.map(d => ({
           dish: d.dish.trim(),
           serving: parseFloat(d.serving) || 0, // ml per person
+          departments: Array.isArray(d.departments) ? d.departments : [],
         }));
       }
     });
@@ -100,6 +106,51 @@ export default function MonthlyMenu() {
     store.saveMonthlyMenu(ym, updatedMenu);
     setMenu(updatedMenu);
     setShowModal(false);
+  }
+
+  function cloneMenu(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function showToast(message) {
+    setToastMessage(message);
+    setTimeout(() => setToastMessage(''), 3000);
+  }
+
+  function openCopyMonth() {
+    setCopyMonthTarget(`${year}-${String(month + 1).padStart(2, '0')}`);
+    setShowCopyMonthModal(true);
+  }
+
+  function copyMonth() {
+    if (!copyMonthTarget || copyMonthTarget === yearMonth) return;
+    const targetLabel = new Date(`${copyMonthTarget}-01T00:00:00`).toLocaleDateString('en-IN', {
+      month: 'long',
+      year: 'numeric',
+    });
+    if (!window.confirm(`Replace the menu for ${targetLabel} with a copy of ${MONTHS[month]} ${year}?`)) return;
+    store.saveMonthlyMenu(copyMonthTarget, cloneMenu(menu));
+    setShowCopyMonthModal(false);
+    showToast(`Menu copied to ${targetLabel}`);
+  }
+
+  function copyDay() {
+    if (!selectedDay || !copyDayTarget) return;
+    const sourceMenu = menu[selectedDay] || {};
+    const sourceDate = `${year}-${String(month + 1).padStart(2, '0')}-${String(selectedDay).padStart(2, '0')}`;
+    if (copyDayTarget === sourceDate) return;
+    const targetDate = new Date(`${copyDayTarget}T00:00:00`);
+    if (Number.isNaN(targetDate.getTime())) return;
+    const targetYearMonth = getYearMonth(targetDate);
+    const targetDay = targetDate.getDate();
+    const targetMenu = store.getMonthlyMenu(targetYearMonth);
+    const targetLabel = targetDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    if (!window.confirm(`Replace the menu for ${targetLabel} with this day's menu?`)) return;
+    const updatedTargetMenu = { ...targetMenu, [targetDay]: cloneMenu(sourceMenu) };
+    store.saveMonthlyMenu(targetYearMonth, updatedTargetMenu);
+    if (targetYearMonth === yearMonth) setMenu(updatedTargetMenu);
+    setShowModal(false);
+    showToast(`Day menu copied to ${targetLabel}`);
   }
 
   const today = new Date();
@@ -111,6 +162,7 @@ export default function MonthlyMenu() {
 
   return (
     <div className="page-container">
+      {toastMessage && <div className="toast-notification animate-in"><span>✓</span> {toastMessage}</div>}
       <div className="page-header animate-in">
         <h1>Monthly Menu</h1>
         <p>Plan Breakfast, Lunch, and Dinner for every day. Set per-person serving amounts for each dish.</p>
@@ -121,7 +173,10 @@ export default function MonthlyMenu() {
         <div className="card-header">
           <button className="btn btn-ghost" onClick={() => changeMonth(-1)}>← Prev</button>
           <h2>{MONTHS[month]} {year}</h2>
-          <button className="btn btn-ghost" onClick={() => changeMonth(1)}>Next →</button>
+          <div className="flex items-center gap-sm">
+            <button className="btn btn-secondary btn-sm" onClick={openCopyMonth}>Copy Month</button>
+            <button className="btn btn-ghost" onClick={() => changeMonth(1)}>Next →</button>
+          </div>
         </div>
         <div className="card-body" style={{ padding: 0 }}>
           <div className="calendar-grid">
@@ -179,6 +234,23 @@ export default function MonthlyMenu() {
               <button className="btn btn-ghost btn-icon" onClick={() => setShowModal(false)}>✕</button>
             </div>
             <div className="modal-body">
+              <div className="copy-day-panel">
+                <div>
+                  <div className="form-label" style={{ marginBottom: 2 }}>Reuse this day&apos;s menu</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Copy breakfast, lunch, and dinner to another date.</div>
+                </div>
+                <div className="flex items-end gap-sm">
+                  <input
+                    type="date"
+                    className="form-input"
+                    value={copyDayTarget}
+                    onChange={e => setCopyDayTarget(e.target.value)}
+                  />
+                  <button className="btn btn-secondary btn-sm" onClick={copyDay} disabled={!copyDayTarget}>
+                    Copy Day
+                  </button>
+                </div>
+              </div>
               {['breakfast', 'lunch', 'dinner'].map(mealType => (
                 <div key={mealType} style={{ marginBottom: 'var(--space-xl)' }}>
                   <div className="flex items-center justify-between mb-lg">
@@ -208,7 +280,7 @@ export default function MonthlyMenu() {
                           type="number"
                           className="form-input"
                           placeholder={
-                            recipes.find(r => r.name === dish.dish)?.yieldUnit === 'pcs'
+                            getRecipeServingUnit(recipes.find(r => r.name === dish.dish)) === 'pieces'
                               ? 'serving (pcs)'
                               : 'serving (ml)'
                           }
@@ -216,6 +288,26 @@ export default function MonthlyMenu() {
                           onChange={e => updateDish(mealType, idx, 'serving', e.target.value)}
                           min="0"
                         />
+                      </div>
+                      <div className="dish-department-picker">
+                        <span className="form-hint">Served to</span>
+                        <div className="dish-department-options">
+                          {departments.map(dept => (
+                            <label key={dept.id} className="dish-department-option">
+                              <input
+                                type="checkbox"
+                                checked={(dish.departments || []).includes(dept.id)}
+                                onChange={e => {
+                                  const nextDepartments = e.target.checked
+                                    ? [...(dish.departments || []), dept.id]
+                                    : (dish.departments || []).filter(id => id !== dept.id);
+                                  updateDish(mealType, idx, 'departments', nextDepartments);
+                                }}
+                              />
+                              {dept.name}
+                            </label>
+                          ))}
+                        </div>
                       </div>
                       <button className="btn btn-danger btn-sm btn-icon" onClick={() => removeDish(mealType, idx)}>✕</button>
                     </div>
@@ -226,6 +318,40 @@ export default function MonthlyMenu() {
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setShowModal(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={saveMenu}>Save Menu</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCopyMonthModal && (
+        <div className="modal-overlay" onClick={() => setShowCopyMonthModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Copy {MONTHS[month]} {year}</h3>
+              <button className="btn btn-ghost btn-icon" onClick={() => setShowCopyMonthModal(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 13 }}>
+                Copy every scheduled day and meal from this month into another month.
+              </p>
+              <div className="form-group" style={{ marginTop: 'var(--space-lg)' }}>
+                <label className="form-label">Destination month</label>
+                <input
+                  type="month"
+                  className="form-input"
+                  value={copyMonthTarget}
+                  onChange={e => setCopyMonthTarget(e.target.value)}
+                />
+              </div>
+              <div className="copy-warning">
+                Existing menu data in the destination month will be replaced.
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setShowCopyMonthModal(false)}>Cancel</button>
+              <button className="btn btn-primary" onClick={copyMonth} disabled={!copyMonthTarget || copyMonthTarget === yearMonth}>
+                Copy Month
+              </button>
             </div>
           </div>
         </div>

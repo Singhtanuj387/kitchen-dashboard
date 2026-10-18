@@ -92,7 +92,7 @@ export default function History() {
   const stats = useMemo(() => {
     const totalRuns = historyList.length;
     const totalHeadcount = historyList.reduce((sum, h) => sum + (h.totalPeople || 0), 0);
-    const totalSpend = historyList.reduce((sum, h) => sum + (h.totalCost || 0), 0);
+    const totalSpend = historyList.reduce((sum, h) => sum + (h.adjustedCost ?? h.totalCost ?? 0), 0);
     const latestDate = historyList.length > 0 ? historyList[0].dateFormatted || historyList[0].date : 'None';
 
     return { totalRuns, totalHeadcount, totalSpend, latestDate };
@@ -148,9 +148,9 @@ export default function History() {
           <div className="stat-change neutral">Cumulative headcount</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Total Estimated Cost</div>
+          <div className="stat-label">Total Adjusted Cost</div>
           <div className="stat-value" style={{ color: 'var(--accent)' }}>₹{formatNumber(stats.totalSpend, 0)}</div>
-          <div className="stat-change positive">Master ingredient spend</div>
+          <div className="stat-change positive">Includes operating cost multiplier</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Latest Production Run</div>
@@ -290,19 +290,10 @@ export default function History() {
                       </span>
                     </div>
 
-                    {/* Cost pill */}
-                    <div
-                      style={{
-                        padding: '6px 14px',
-                        background: 'rgba(234, 88, 12, 0.08)',
-                        border: '1px solid rgba(234, 88, 12, 0.2)',
-                        borderRadius: 8,
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: 'var(--accent)',
-                      }}
-                    >
-                      ₹{formatNumber(entry.totalCost, 0)}
+                    {/* Cost summary */}
+                    <div className="history-cost-summary">
+                      <span>Ingredient ₹{formatNumber(entry.totalCost, 0)}</span>
+                      <strong>Adjusted ₹{formatNumber(entry.adjustedCost ?? entry.totalCost, 0)}</strong>
                     </div>
 
                     {/* Quick Action: Download Excel */}
@@ -510,7 +501,9 @@ export default function History() {
                                     <tr>
                                       <th>Ingredient</th>
                                       <th style={{ textAlign: 'right' }}>Standard Qty</th>
-                                      <th style={{ textAlign: 'right' }}>Required Qty</th>
+                                      <th style={{ textAlign: 'right' }}>Calculated Qty</th>
+                                      <th style={{ textAlign: 'right' }}>Final Qty</th>
+                                      <th style={{ textAlign: 'right' }}>Real Qty</th>
                                       <th>Unit</th>
                                       <th style={{ textAlign: 'right' }}>Rate (₹)</th>
                                       <th style={{ textAlign: 'right' }}>Amount (₹)</th>
@@ -522,14 +515,25 @@ export default function History() {
                                       <tr key={iIdx}>
                                         <td style={{ fontWeight: 600 }}>{ing.name}</td>
                                         <td style={{ textAlign: 'right', color: 'var(--text-tertiary)' }}>{ing.standardQty}</td>
+                                        <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--text-secondary)' }}>
+                                          {formatNumber(ing.calculatedQty ?? ing.requiredQty, 2)}
+                                        </td>
                                         <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--accent)' }}>
-                                          {formatNumber(ing.requiredQty, 2)}
+                                          {formatNumber(ing.finalQty ?? ing.requiredQty, 2)}
+                                        </td>
+                                        <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--success)' }}>
+                                          {ing.realQty === '' || ing.realQty === undefined ? '—' : formatNumber(ing.realQty, 2)}
                                         </td>
                                         <td>{ing.unit}</td>
                                         <td style={{ textAlign: 'right' }}>₹{formatNumber(ing.rate, 2)}</td>
                                         <td style={{ textAlign: 'right', fontWeight: 600 }}>₹{formatNumber(ing.amount, 2)}</td>
                                         <td style={{ fontSize: 11, color: 'var(--text-secondary)', maxWidth: 280 }}>
-                                          {ing.cookingProcess || dishItem.cookingSteps?.find(cs => cs.ingredient === ing.name)?.text || '—'}
+                                          {ing.cookingProcess ||
+                                            dishItem.cookingSteps?.find(cs =>
+                                              cs.ingredient === ing.name || cs.ingredients?.includes(ing.name)
+                                            )?.hindi ||
+                                            dishItem.cookingSteps?.find(cs => cs.ingredient === ing.name)?.text ||
+                                            '—'}
                                         </td>
                                       </tr>
                                     ))}
@@ -548,8 +552,12 @@ export default function History() {
                                       <div key={sIdx} style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'flex', gap: 8, lineHeight: 1.45 }}>
                                         <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{step.stepNumber}.</span>
                                         <span>
+                                          {step.ingredients?.length > 0 && (
+                                            <strong style={{ color: 'var(--text-primary)' }}>{step.ingredients.join(', ')}: </strong>
+                                          )}
                                           {step.ingredient && <strong style={{ color: 'var(--text-primary)' }}>{step.ingredient}: </strong>}
-                                          {step.text}
+                                          {step.english && <div>{step.english}</div>}
+                                          {step.hindi || step.text || '—'}
                                         </span>
                                       </div>
                                     ))}

@@ -8,10 +8,12 @@ export default function AmountClaim() {
   const [filterDept, setFilterDept] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
   const [form, setForm] = useState({
-    date: '', dept: '', menu: '', menuCost: '', count: '', paymentStatus: 'Pending'
+    date: '', dept: '', menu: '', menuCost: '', count: '', finalCost: '', paymentStatus: 'Pending'
   });
-
   const departments = store.getDepartments();
+  const formTotalCost = isDeptNonChargeable(form.dept)
+    ? 0
+    : parseFloat(form.menuCost || 0) * parseInt(form.count || 0, 10);
 
   function isDeptNonChargeable(deptName) {
     const d = departments.find(item => item.name.toLowerCase() === (deptName || '').toLowerCase());
@@ -35,7 +37,8 @@ export default function AmountClaim() {
     let nonChargeableCount = 0;
     filteredClaims.forEach(c => {
       const isNon = c.paymentStatus === 'Non-Chargeable' || isDeptNonChargeable(c.dept);
-      const cost = isNon ? 0 : (c.menuCost * c.count);
+      const calculatedTotal = isNon ? 0 : (c.menuCost * c.count);
+      const cost = isNon ? 0 : (c.finalCost ?? calculatedTotal);
       totalCost += cost;
       if (isNon) {
         nonChargeableCount += (c.count || 0);
@@ -60,6 +63,7 @@ export default function AmountClaim() {
       menu: '',
       menuCost: isNon ? '0' : '',
       count: departments[0]?.defaultCount?.toString() || '',
+      finalCost: '',
       paymentStatus: isNon ? 'Non-Chargeable' : 'Pending',
     });
     setShowModal(true);
@@ -68,12 +72,14 @@ export default function AmountClaim() {
   function openEdit(claim) {
     setEditingClaim(claim);
     const isNon = isDeptNonChargeable(claim.dept);
+    const calculatedTotal = isNon ? 0 : (claim.menuCost * claim.count);
     setForm({
       date: claim.date,
       dept: claim.dept,
       menu: claim.menu,
       menuCost: isNon ? '0' : claim.menuCost.toString(),
       count: claim.count.toString(),
+      finalCost: isNon ? '0' : String(claim.finalCost ?? calculatedTotal),
       paymentStatus: isNon ? 'Non-Chargeable' : claim.paymentStatus,
     });
     setShowModal(true);
@@ -85,12 +91,26 @@ export default function AmountClaim() {
       ...prev,
       dept: deptName,
       menuCost: isNon ? '0' : (prev.menuCost === '0' ? '' : prev.menuCost),
+      finalCost: isNon ? '0' : prev.finalCost,
       paymentStatus: isNon ? 'Non-Chargeable' : (prev.paymentStatus === 'Non-Chargeable' ? 'Pending' : prev.paymentStatus),
     }));
   }
 
+  function handleCalculatedFieldChange(field, value) {
+    const previousTotal = formTotalCost;
+    const shouldFollowTotal = form.finalCost === '' || Number(form.finalCost) === previousTotal;
+    const nextForm = { ...form, [field]: value };
+    const nextTotal = field === 'menuCost'
+      ? (isFormDeptNonChargeable ? 0 : parseFloat(value || 0) * parseInt(form.count || 0, 10))
+      : (isFormDeptNonChargeable ? 0 : parseFloat(form.menuCost || 0) * parseInt(value || 0, 10));
+    if (shouldFollowTotal) {
+      nextForm.finalCost = String(nextTotal);
+    }
+    setForm(nextForm);
+  }
+
   function handleSave() {
-    if (!form.date || !form.dept || form.menuCost === '' || !form.count) return;
+    if (!form.date || !form.dept || form.menuCost === '' || !form.count || form.finalCost === '') return;
     const isNon = isDeptNonChargeable(form.dept);
     const data = {
       date: form.date,
@@ -98,6 +118,7 @@ export default function AmountClaim() {
       menu: form.menu.trim(),
       menuCost: isNon ? 0 : parseFloat(form.menuCost),
       count: parseInt(form.count, 10),
+      finalCost: isNon ? 0 : parseFloat(form.finalCost),
       paymentStatus: isNon ? 'Non-Chargeable' : form.paymentStatus,
     };
     if (editingClaim) {
@@ -200,6 +221,7 @@ export default function AmountClaim() {
                 <th className="text-right">Menu Cost (₹)</th>
                 <th className="text-right">Count</th>
                 <th className="text-right">Total Cost (₹)</th>
+                <th className="text-right">Final Cost (₹)</th>
                 <th className="text-center">Status</th>
                 <th className="text-center" style={{ width: 120 }}>Actions</th>
               </tr>
@@ -207,7 +229,7 @@ export default function AmountClaim() {
             <tbody>
               {filteredClaims.length === 0 ? (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <div className="empty-state">
                       <div className="empty-state-icon">💰</div>
                       <h3>No claims recorded</h3>
@@ -219,6 +241,7 @@ export default function AmountClaim() {
                 filteredClaims.map(claim => {
                   const isNon = claim.paymentStatus === 'Non-Chargeable' || isDeptNonChargeable(claim.dept);
                   const totalCost = isNon ? 0 : (claim.menuCost * claim.count);
+                  const finalCost = isNon ? 0 : (claim.finalCost ?? totalCost);
                   return (
                     <tr key={claim.id}>
                       <td style={{ whiteSpace: 'nowrap', fontWeight: 500 }}>
@@ -241,6 +264,9 @@ export default function AmountClaim() {
                       <td className="text-right font-mono">{claim.count}</td>
                       <td className="text-right font-mono" style={{ fontWeight: 600, color: isNon ? 'var(--text-muted)' : 'var(--accent)' }}>
                         {isNon ? '₹0 (Exempt)' : `₹${formatNumber(totalCost, 0)}`}
+                      </td>
+                      <td className="text-right font-mono" style={{ fontWeight: 700, color: isNon ? 'var(--text-muted)' : 'var(--success)' }}>
+                        {isNon ? '₹0 (Exempt)' : `₹${formatNumber(finalCost, 0)}`}
                       </td>
                       <td className="text-center">
                         {isNon ? (
@@ -274,7 +300,7 @@ export default function AmountClaim() {
               )}
               {filteredClaims.length > 0 && (
                 <tr style={{ background: 'var(--bg-tertiary)' }}>
-                  <td colSpan={5} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Grand Total (Billable)</td>
+                  <td colSpan={6} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>Final Total (Billable)</td>
                   <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--success)', fontSize: 15 }}>
                     ₹{formatNumber(totals.totalCost, 0)}
                   </td>
@@ -354,7 +380,7 @@ export default function AmountClaim() {
                       className="form-input"
                       placeholder="60"
                       value={form.menuCost}
-                      onChange={e => setForm({ ...form, menuCost: e.target.value })}
+                      onChange={e => handleCalculatedFieldChange('menuCost', e.target.value)}
                       min="0"
                       disabled={isFormDeptNonChargeable}
                     />
@@ -366,17 +392,34 @@ export default function AmountClaim() {
                       className="form-input"
                       placeholder="50"
                       value={form.count}
-                      onChange={e => setForm({ ...form, count: e.target.value })}
+                      onChange={e => handleCalculatedFieldChange('count', e.target.value)}
                       min="0"
                     />
                   </div>
                 </div>
                 {form.menuCost && form.count && (
                   <div style={{ padding: 'var(--space-md) var(--space-lg)', background: 'var(--accent-subtle)', borderRadius: 'var(--radius-sm)' }}>
-                    <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Total Cost: </span>
-                    <span style={{ fontSize: 18, fontWeight: 700, color: isFormDeptNonChargeable ? 'var(--text-muted)' : 'var(--accent)' }}>
-                      {isFormDeptNonChargeable ? '₹0 (Exempt)' : `₹${formatNumber(parseFloat(form.menuCost || 0) * parseInt(form.count || 0, 10), 0)}`}
-                    </span>
+                    <div className="flex items-center justify-between gap-md">
+                      <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Total Cost</span>
+                      <strong style={{ fontSize: 18, color: isFormDeptNonChargeable ? 'var(--text-muted)' : 'var(--accent)' }}>
+                        {isFormDeptNonChargeable ? '₹0 (Exempt)' : `₹${formatNumber(formTotalCost, 0)}`}
+                      </strong>
+                    </div>
+                    <div className="form-group" style={{ marginTop: 'var(--space-md)', marginBottom: 0 }}>
+                      <label className="form-label">Final Cost (₹)</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        value={isFormDeptNonChargeable ? '0' : form.finalCost}
+                        onChange={e => setForm({ ...form, finalCost: e.target.value })}
+                        min="0"
+                        step="0.01"
+                        disabled={isFormDeptNonChargeable}
+                      />
+                      <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
+                        Adjust this amount to the actual charge. It starts equal to Total Cost.
+                      </div>
+                    </div>
                   </div>
                 )}
                 <div className="form-group">

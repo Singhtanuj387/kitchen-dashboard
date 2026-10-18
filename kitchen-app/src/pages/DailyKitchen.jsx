@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { store, getYearMonth, getDateString, calculateRequiredQty, formatNumber, findMasterItem } from '../store';
+import { store, getYearMonth, getDateString, calculateRequiredQty, formatNumber, findMasterItem, getRecipeServingUnit, calculateIngredientCost, getRecipeProcedureSteps } from '../store';
 import { exportDayToExcel } from '../utils/excelExport';
 
 export default function DailyKitchen() {
@@ -14,7 +14,11 @@ export default function DailyKitchen() {
     depts.forEach(d => { counts[d.id] = d.defaultCount; });
     return counts;
   });
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState(() => store.getDepartments()[0]?.id || '');
   const [activeTab, setActiveTab] = useState('all');
+  const [expandedRecipes, setExpandedRecipes] = useState({});
+  const [ingredientOverrides, setIngredientOverrides] = useState({});
+  const [realIngredientQuantities, setRealIngredientQuantities] = useState({});
   const [toastMessage, setToastMessage] = useState('');
 
   useEffect(() => {
@@ -27,10 +31,14 @@ export default function DailyKitchen() {
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [generateDate, setGenerateDate] = useState('');
   const [generateCounts, setGenerateCounts] = useState({});
+  const [selectedGenerateDepartmentId, setSelectedGenerateDepartmentId] = useState('');
 
   const departments = store.getDepartments();
   const recipes = store.getRecipes();
   const masterList = store.getMasterList();
+  const costMultiplier = store.getCostSettings().multiplier;
+  const selectedDepartment = departments.find(dept => dept.id === selectedDepartmentId) || departments[0];
+  const selectedGenerateDepartment = departments.find(dept => dept.id === selectedGenerateDepartmentId) || departments[0];
 
   // Load saved counts if available when selectedDate changes
   useEffect(() => {
@@ -40,6 +48,8 @@ export default function DailyKitchen() {
       saved.departments.forEach(d => { counts[d.id] = d.count; });
       setDeptCounts(counts);
     }
+    setIngredientOverrides(saved?.ingredientOverrides || {});
+    setRealIngredientQuantities(saved?.realIngredientQuantities || {});
   }, [selectedDate]);
 
   // Get the menu for selected date
@@ -109,11 +119,17 @@ export default function DailyKitchen() {
       }
     });
     setGenerateCounts(initialCounts);
+    setSelectedGenerateDepartmentId(prev => departments.some(d => d.id === prev) ? prev : (departments[0]?.id || ''));
     setShowGenerateModal(true);
   }
 
   // Helper to build a comprehensive history snapshot for any date
-  function buildDaySnapshot(dateStr, countsMap, totalCount, chargeableCount, nonChargeableCount, menuObj) {
+  function getDishHeadcount(dishItem, countsMap, fallbackTotal) {
+    if (!Array.isArray(dishItem?.departments) || dishItem.departments.length === 0) return fallbackTotal;
+    return dishItem.departments.reduce((sum, departmentId) => sum + (parseInt(countsMap[departmentId], 10) || 0), 0);
+  }
+
+  function buildDaySnapshot(dateStr, countsMap, totalCount, chargeableCount, nonChargeableCount, menuObj, overrides = {}, realQuantities = {}) {
     const dObj = new Date(dateStr + 'T00:00:00');
     const dFormatted = dObj.toLocaleDateString('en-IN', {
       weekday: 'long',
@@ -127,7 +143,7 @@ export default function DailyKitchen() {
 
     ['breakfast', 'lunch', 'dinner'].forEach(m => {
       const list = menuObj[m] || [];
-      mealsObj[m] = list.map(item => {
+      mealsObj[m] = list.map((item, dishIdx) => {
         const rec = recipes.find(r => r.name.trim().toLowerCase() === item.dish.trim().toLowerCase());
         if (!rec) {
           return {
@@ -137,26 +153,38 @@ export default function DailyKitchen() {
             requiredYield: 0,
             yieldUnit: 'L',
             totalCost: 0,
+            adjustedCost: 0,
             ingredients: [],
             cookingSteps: [],
           };
         }
 
-        const isPieces = rec.yieldUnit === 'pcs';
+        const isPieces = getRecipeServingUnit(rec) === 'pieces';
         const servingAmount = item.serving || 0;
+        const dishHeadcount = getDishHeadcount(item, countsMap, totalCount);
         const requiredYield = isPieces
-          ? Math.round(totalCount * servingAmount)
-          : Math.round((totalCount * servingAmount) / 1000);
+          ? Math.round(dishHeadcount * servingAmount)
+          : Math.round((dishHeadcount * servingAmount) / 1000);
 
-        const ingredients = rec.ingredients.map(ing => {
-          const reqQty = calculateRequiredQty(ing.standardQty, requiredYield, rec.standardYield);
+        const ingredients = rec.ingredients.map((ing, ingredientIdx) => {
+          const calculatedQty = calculateRequiredQty(ing.standardQty, requiredYield, rec.standardYield);
+          const overrideValue = overrides[getIngredientOverrideKey(m, dishIdx, ingredientIdx)];
+          const parsedOverride = Number(overrideValue);
+          const finalQty = overrideValue === undefined || overrideValue === '' || !Number.isFinite(parsedOverride)
+            ? calculatedQty
+            : parsedOverride;
+          const realValue = realQuantities[getIngredientOverrideKey(m, dishIdx, ingredientIdx)];
+          const parsedRealValue = Number(realValue);
           const master = findMasterItem(ing.name, masterList);
           const rate = master ? master.pricePerUnit : 0;
-          const amount = reqQty * rate;
+          const amount = calculateIngredientCost(finalQty, rate, ing.unit, master?.unit);
           return {
             name: ing.name,
             standardQty: ing.standardQty,
-            requiredQty: reqQty,
+            calculatedQty,
+            requiredQty: finalQty,
+            finalQty,
+            realQty: realValue === undefined || realValue === '' || !Number.isFinite(parsedRealValue) ? '' : parsedRealValue,
             unit: ing.unit,
             rate,
             amount,
@@ -165,19 +193,22 @@ export default function DailyKitchen() {
         });
 
         const dishCost = ingredients.reduce((sum, ing) => sum + ing.amount, 0);
+        const adjustedCost = dishCost * costMultiplier;
         dayTotalCost += dishCost;
 
         return {
           dish: item.dish,
           serving: item.serving,
+          departments: item.departments || [],
+          dishHeadcount,
+          calculatedYield: requiredYield,
           servingUnit: isPieces ? 'pcs' : 'ml',
           requiredYield,
           yieldUnit: rec.yieldUnit || 'L',
           totalCost: dishCost,
+          adjustedCost,
           ingredients,
-          cookingSteps: rec.ingredients
-            .filter(ing => ing.cookingProcess && ing.cookingProcess.trim())
-            .map((ing, idx) => ({ stepNumber: idx + 1, text: ing.cookingProcess, ingredient: ing.name })),
+          cookingSteps: getRecipeProcedureSteps(rec),
         };
       });
     });
@@ -197,6 +228,8 @@ export default function DailyKitchen() {
         isChargeable: d.isChargeable !== false,
       })),
       totalCost: dayTotalCost,
+      adjustedCost: dayTotalCost * costMultiplier,
+      costMultiplier,
       meals: mealsObj,
     };
   }
@@ -211,6 +244,8 @@ export default function DailyKitchen() {
       })),
       totalPeople: generateTotalPeople,
       menu: generateDayMenu,
+      ingredientOverrides: {},
+      realIngredientQuantities: {},
     });
 
     // Archive snapshot into Recipe History
@@ -231,41 +266,93 @@ export default function DailyKitchen() {
     setTimeout(() => setToastMessage(''), 3500);
   }
 
+  function getIngredientOverrideKey(mealKey, dishIdx, ingredientIdx) {
+    return `${mealKey}-${dishIdx}-${ingredientIdx}`;
+  }
+
+  function persistDailyKitchen(overrides = ingredientOverrides) {
+    store.saveDailyKitchen(selectedDate, {
+      date: selectedDate,
+      departments: departments.map(d => ({ id: d.id, name: d.name, count: parseInt(deptCounts[d.id], 10) || 0 })),
+      totalPeople,
+      menu: dayMenu,
+      ingredientOverrides: overrides,
+      realIngredientQuantities,
+    });
+  }
+
+  function handleIngredientQuantityChange(mealKey, dishIdx, ingredientIdx, value) {
+    const key = getIngredientOverrideKey(mealKey, dishIdx, ingredientIdx);
+    setIngredientOverrides(prev => ({ ...prev, [key]: value }));
+  }
+
+  function saveIngredientQuantityOverride() {
+    persistDailyKitchen();
+  }
+
+  function resetIngredientQuantity(mealKey, dishIdx, ingredientIdx) {
+    const key = getIngredientOverrideKey(mealKey, dishIdx, ingredientIdx);
+    const nextOverrides = { ...ingredientOverrides };
+    delete nextOverrides[key];
+    setIngredientOverrides(nextOverrides);
+    persistDailyKitchen(nextOverrides);
+  }
+
+  function handleRealIngredientQuantityChange(mealKey, dishIdx, ingredientIdx, value) {
+    const key = getIngredientOverrideKey(mealKey, dishIdx, ingredientIdx);
+    const nextValues = { ...realIngredientQuantities, [key]: value };
+    setRealIngredientQuantities(nextValues);
+    store.saveDailyKitchen(selectedDate, {
+      date: selectedDate,
+      departments: departments.map(d => ({ id: d.id, name: d.name, count: parseInt(deptCounts[d.id], 10) || 0 })),
+      totalPeople,
+      menu: dayMenu,
+      ingredientOverrides,
+      realIngredientQuantities: nextValues,
+    });
+  }
+
   // Calculate full recipe details for a dish
-  function calculateDishDetails(dishItem) {
+  function calculateDishDetails(dishItem, mealKey, dishIdx) {
     const recipe = recipes.find(r => r.name.trim().toLowerCase() === dishItem.dish.trim().toLowerCase());
     if (!recipe) return null;
 
     // serving is in ml per person (or pcs per person for items like rotis/samosas/bananas)
     const servingAmount = dishItem.serving || 0;
-    const isPieces = recipe.yieldUnit === 'pcs';
+    const dishHeadcount = getDishHeadcount(dishItem, deptCounts, totalPeople);
+    const isPieces = getRecipeServingUnit(recipe) === 'pieces';
     const totalYield = isPieces
-      ? Math.round(totalPeople * servingAmount)
-      : Math.round((totalPeople * servingAmount) / 1000);
+      ? Math.round(dishHeadcount * servingAmount)
+      : Math.round((dishHeadcount * servingAmount) / 1000);
     const requiredYield = totalYield;
 
-    const ingredients = recipe.ingredients.map(ing => {
-      const reqQty = calculateRequiredQty(ing.standardQty, requiredYield, recipe.standardYield);
+    const ingredients = recipe.ingredients.map((ing, ingredientIdx) => {
+      const calculatedQty = calculateRequiredQty(ing.standardQty, requiredYield, recipe.standardYield);
+      const overrideValue = ingredientOverrides[getIngredientOverrideKey(mealKey, dishIdx, ingredientIdx)];
+      const parsedOverride = Number(overrideValue);
+      const finalQty = overrideValue === undefined || overrideValue === '' || !Number.isFinite(parsedOverride)
+        ? calculatedQty
+        : parsedOverride;
+      const realValue = realIngredientQuantities[getIngredientOverrideKey(mealKey, dishIdx, ingredientIdx)];
+      const parsedRealValue = Number(realValue);
       const master = findMasterItem(ing.name, masterList);
       const rate = master ? master.pricePerUnit : 0;
-      const amount = reqQty * rate;
+      const amount = calculateIngredientCost(finalQty, rate, ing.unit, master?.unit);
       return {
         ...ing,
-        requiredQty: reqQty,
+        calculatedQty,
+        requiredQty: finalQty,
+        finalQty,
+        realQty: realValue === undefined || realValue === '' || !Number.isFinite(parsedRealValue) ? '' : parsedRealValue,
         rate,
         amount,
       };
     });
 
     const totalCost = ingredients.reduce((sum, ing) => sum + ing.amount, 0);
+    const adjustedCost = totalCost * costMultiplier;
 
-    const cookingSteps = recipe.ingredients
-      .filter(ing => ing.cookingProcess && ing.cookingProcess.trim())
-      .map((ing, idx) => ({
-        stepNumber: idx + 1,
-        text: ing.cookingProcess,
-        ingredient: ing.name,
-      }));
+    const cookingSteps = getRecipeProcedureSteps(recipe);
 
     return {
       recipe,
@@ -273,8 +360,10 @@ export default function DailyKitchen() {
       isPieces,
       totalYield,
       requiredYield,
+      dishHeadcount,
       ingredients,
       totalCost,
+      adjustedCost,
       cookingSteps,
     };
   }
@@ -284,13 +373,13 @@ export default function DailyKitchen() {
     const meals = ['breakfast', 'lunch', 'dinner'];
     const result = {};
     meals.forEach(m => {
-      result[m] = (dayMenu[m] || []).map(dish => ({
+      result[m] = (dayMenu[m] || []).map((dish, dishIdx) => ({
         ...dish,
-        details: calculateDishDetails(dish),
+        details: calculateDishDetails(dish, m, dishIdx),
       }));
     });
     return result;
-  }, [dayMenu, totalPeople, recipes, masterList]);
+  }, [dayMenu, totalPeople, recipes, masterList, ingredientOverrides, realIngredientQuantities, deptCounts]);
 
   // Total cost for the day
   const dayCost = useMemo(() => {
@@ -303,14 +392,13 @@ export default function DailyKitchen() {
     return total;
   }, [allMealData]);
 
+  const adjustedDayCost = useMemo(() => {
+    return dayCost * costMultiplier;
+  }, [dayCost, costMultiplier]);
+
   // Save daily kitchen data
   function saveDailyKitchen() {
-    store.saveDailyKitchen(selectedDate, {
-      date: selectedDate,
-      departments: departments.map(d => ({ id: d.id, name: d.name, count: parseInt(deptCounts[d.id], 10) || 0 })),
-      totalPeople,
-      menu: dayMenu,
-    });
+    persistDailyKitchen();
 
     // Mirror to recipe history
     const historySnapshot = buildDaySnapshot(
@@ -319,7 +407,9 @@ export default function DailyKitchen() {
       totalPeople,
       chargeablePeople,
       nonChargeablePeople,
-      dayMenu
+      dayMenu,
+      ingredientOverrides,
+      realIngredientQuantities
     );
     store.addRecipeHistory(historySnapshot);
 
@@ -335,7 +425,9 @@ export default function DailyKitchen() {
       totalPeople,
       chargeablePeople,
       nonChargeablePeople,
-      dayMenu
+      dayMenu,
+      ingredientOverrides,
+      realIngredientQuantities
     );
     exportDayToExcel(currentSnapshot);
     setToastMessage(`📥 Excel downloaded for ${selectedDate}`);
@@ -358,7 +450,7 @@ export default function DailyKitchen() {
         summaryText += '\n';
       }
     });
-    summaryText += `Estimated Day Cost: ₹${formatNumber(dayCost, 0)}`;
+    summaryText += `Ingredient Cost: ₹${formatNumber(dayCost, 0)}\nAdjusted Cost (${formatNumber(costMultiplier, 2)}x): ₹${formatNumber(adjustedDayCost, 0)}`;
     navigator.clipboard.writeText(summaryText);
     setToastMessage('Summary copied to clipboard!');
     setTimeout(() => setToastMessage(''), 3000);
@@ -375,6 +467,10 @@ export default function DailyKitchen() {
     { key: 'lunch', label: 'Lunch', count: allMealData.lunch?.length || 0 },
     { key: 'dinner', label: 'Dinner', count: allMealData.dinner?.length || 0 },
   ];
+
+  function toggleRecipe(recipeKey) {
+    setExpandedRecipes(prev => ({ ...prev, [recipeKey]: !prev[recipeKey] }));
+  }
 
   const dateFormatted = new Date(selectedDate + 'T00:00:00').toLocaleDateString('en-IN', {
     weekday: 'long',
@@ -442,7 +538,7 @@ export default function DailyKitchen() {
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ fontSize: 20, fontWeight: 800 }}>Total: {totalPeople} People</div>
-            <div style={{ fontSize: 12 }}>Est. Cost: ₹{formatNumber(dayCost, 0)}</div>
+            <div style={{ fontSize: 12 }}>Ingredient: ₹{formatNumber(dayCost, 0)} · Adjusted: ₹{formatNumber(adjustedDayCost, 0)}</div>
           </div>
         </div>
         <div style={{ fontSize: 11, background: '#f3f4f6', padding: '6px 10px', borderRadius: 4, marginBottom: 16 }}>
@@ -510,24 +606,36 @@ export default function DailyKitchen() {
           </div>
         </div>
         <div className="card-body">
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 'var(--space-md)' }}>
-            {departments.map(dept => (
-              <div key={dept.id} className="dept-input-card">
+          <div className="dept-selector">
+            <label className="form-label" htmlFor="daily-department-select">Department head</label>
+            <select
+              id="daily-department-select"
+              className="form-select"
+              value={selectedDepartment?.id || ''}
+              onChange={e => setSelectedDepartmentId(e.target.value)}
+              aria-label="Select department head"
+            >
+              {departments.map(dept => (
+                <option key={dept.id} value={dept.id}>{dept.name}</option>
+              ))}
+            </select>
+          </div>
+          {selectedDepartment && (
+            <div className="dept-input-card">
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{dept.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {dept.defaultCount} people</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{selectedDepartment.name}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {selectedDepartment.defaultCount} people</div>
                 </div>
                 <input
                   type="number"
                   className="form-input"
-                  value={deptCounts[dept.id] ?? ''}
-                  onChange={e => setDeptCounts(prev => ({ ...prev, [dept.id]: e.target.value }))}
+                  value={deptCounts[selectedDepartment.id] ?? ''}
+                  onChange={e => setDeptCounts(prev => ({ ...prev, [selectedDepartment.id]: e.target.value }))}
                   style={{ width: 75, textAlign: 'center', fontWeight: 600 }}
                   min="0"
                 />
               </div>
-            ))}
-          </div>
+          )}
         </div>
       </div>
 
@@ -553,8 +661,11 @@ export default function DailyKitchen() {
           <div className="stat-value">{allMealData.dinner?.length || 0}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Estimated Day Cost</div>
-          <div className="stat-value text-success">₹{formatNumber(dayCost, 0)}</div>
+          <div className="stat-label">Adjusted Day Cost</div>
+          <div className="stat-value text-success">₹{formatNumber(adjustedDayCost, 0)}</div>
+          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 2 }}>
+            Ingredient: ₹{formatNumber(dayCost, 0)} · {formatNumber(costMultiplier, 2)}x
+          </div>
         </div>
       </div>
 
@@ -602,6 +713,7 @@ export default function DailyKitchen() {
               </div>
             )}
 
+            <div className="meal-dishes-scroll">
             {dishes.map((dish, dishIdx) => {
               if (!dish.details) {
                 return (
@@ -615,9 +727,17 @@ export default function DailyKitchen() {
               }
 
               const d = dish.details;
+              const recipeKey = `${mealKey}-${dishIdx}`;
+              const isExpanded = Boolean(expandedRecipes[recipeKey]);
               return (
                 <div key={dishIdx} className="card mb-lg recipe-print-block animate-in">
-                  <div className="card-header">
+                  <button
+                    type="button"
+                    className="card-header recipe-summary-toggle"
+                    onClick={() => toggleRecipe(recipeKey)}
+                    aria-expanded={isExpanded}
+                    aria-controls={`recipe-details-${recipeKey}`}
+                  >
                     <div>
                       <div className="flex items-center gap-md">
                         <h2>{dish.dish}</h2>
@@ -625,14 +745,19 @@ export default function DailyKitchen() {
                       </div>
                       <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>
                         {d.isPieces
-                          ? `${d.servingAmount} pcs/person × ${totalPeople} people = `
-                          : `${d.servingAmount} ml/person × ${totalPeople} people = `}
+                          ? `${d.servingAmount} pcs/person × ${d.dishHeadcount} people = `
+                          : `${d.servingAmount} ml/person × ${d.dishHeadcount} people = `}
                         <strong style={{ color: 'var(--accent)', fontSize: 13 }}>
                           {d.requiredYield} {d.recipe.yieldUnit}
-                        </strong> required yield (rounded)
+                        </strong> calculated yield (rounded)
+                        <div className="dish-department-summary">
+                          {dish.departments?.length
+                            ? `Served to: ${dish.departments.map(id => departments.find(dept => dept.id === id)?.name).filter(Boolean).join(', ')}`
+                            : 'Served to: all departments'}
+                        </div>
                       </div>
                     </div>
-                    <div className="flex items-center gap-xl">
+                    <div className="flex items-center gap-xl recipe-summary-meta">
                       <div style={{ textAlign: 'right' }}>
                         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Base Recipe Yield</div>
                         <div style={{ fontSize: 14, fontWeight: 600 }}>{d.recipe.standardYield} {d.recipe.yieldUnit}</div>
@@ -642,20 +767,30 @@ export default function DailyKitchen() {
                         <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--accent)' }}>{d.requiredYield} {d.recipe.yieldUnit}</div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
-                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Batch Cost</div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Ingredient Cost</div>
                         <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--success)' }}>₹{formatNumber(d.totalCost, 0)}</div>
+                        <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2 }}>
+                          Adjusted: ₹{formatNumber(d.adjustedCost, 0)}
+                        </div>
                       </div>
+                      <span className="recipe-disclosure-icon" aria-hidden="true">
+                        {isExpanded ? '−' : '+'}
+                      </span>
                     </div>
-                  </div>
+                  </button>
 
-                  {/* Scaled Ingredients Table */}
-                  <div className="table-container">
+                  <div id={`recipe-details-${recipeKey}`} hidden={!isExpanded}>
+                    {/* Scaled Ingredients Table */}
+                    <div className="recipe-spreadsheet">
+                    <div className="table-container">
                     <table>
                       <thead>
                         <tr>
                           <th>Ingredient</th>
                           <th className="text-right">Standard Qty (Fixed)</th>
-                          <th className="text-right" style={{ color: 'var(--accent)' }}>Required Qty (Calculated)</th>
+                          <th className="text-right" style={{ color: 'var(--text-secondary)' }}>Calculated Qty</th>
+                          <th className="text-right" style={{ color: 'var(--accent)' }}>Final Qty (Editable)</th>
+                          <th className="text-right" style={{ color: 'var(--success)' }}>Real Qty (Cooked)</th>
                           <th>Unit</th>
                           <th className="text-right">Price/Unit (₹)</th>
                           <th className="text-right">Estimated Amount (₹)</th>
@@ -665,17 +800,60 @@ export default function DailyKitchen() {
                         <tr style={{ background: 'var(--accent-subtle)' }}>
                           <td style={{ fontWeight: 600, color: 'var(--accent)' }}>Yield (Total Volume)</td>
                           <td className="text-right font-mono" style={{ fontWeight: 600 }}>{d.recipe.standardYield}</td>
-                          <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--accent)' }}>{formatNumber(d.requiredYield)}</td>
+                          <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>{formatNumber(d.requiredYield)}</td>
+                          <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--accent)' }}>—</td>
+                          <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--success)' }}>—</td>
                           <td><strong>{d.recipe.yieldUnit}</strong></td>
                           <td className="text-right font-mono">-</td>
                           <td className="text-right font-mono">-</td>
                         </tr>
-                        {d.ingredients.map((ing, idx) => (
+                        {d.ingredients.map((ing, idx) => {
+                          const overrideKey = getIngredientOverrideKey(mealKey, dishIdx, idx);
+                          const hasOverride = ingredientOverrides[overrideKey] !== undefined && ingredientOverrides[overrideKey] !== '';
+                          const hasRealQuantity = realIngredientQuantities[overrideKey] !== undefined && realIngredientQuantities[overrideKey] !== '';
+                          return (
                           <tr key={idx}>
                             <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>{ing.name}</td>
                             <td className="text-right font-mono" style={{ color: 'var(--text-secondary)' }}>{ing.standardQty}</td>
-                            <td className="text-right font-mono" style={{ fontWeight: 600, color: 'var(--accent)' }}>
-                              {formatNumber(ing.requiredQty)}
+                            <td className="text-right font-mono" style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>
+                              {formatNumber(ing.calculatedQty)}
+                            </td>
+                            <td className="text-right" style={{ fontWeight: 600, color: 'var(--accent)' }}>
+                              <div className="ingredient-quantity-editor">
+                                <input
+                                  type="number"
+                                  className="form-input ingredient-quantity-input"
+                                  value={hasOverride ? ingredientOverrides[overrideKey] : ing.requiredQty}
+                                  onChange={e => handleIngredientQuantityChange(mealKey, dishIdx, idx, e.target.value)}
+                                  onBlur={saveIngredientQuantityOverride}
+                                  min="0"
+                                  step="any"
+                                  aria-label={`Final quantity for ${ing.name}`}
+                                />
+                                {hasOverride && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm ingredient-quantity-reset"
+                                    onClick={() => resetIngredientQuantity(mealKey, dishIdx, idx)}
+                                    title="Restore calculated quantity"
+                                    aria-label={`Restore calculated quantity for ${ing.name}`}
+                                  >
+                                    ↺
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                            <td className="text-right" style={{ fontWeight: 600, color: 'var(--success)' }}>
+                              <input
+                                type="number"
+                                className="form-input ingredient-quantity-input"
+                                value={hasRealQuantity ? realIngredientQuantities[overrideKey] : ''}
+                                onChange={e => handleRealIngredientQuantityChange(mealKey, dishIdx, idx, e.target.value)}
+                                min="0"
+                                step="any"
+                                placeholder="Enter"
+                                aria-label={`Real cooked quantity for ${ing.name}`}
+                              />
                             </td>
                             <td><span className="badge badge-neutral">{ing.unit}</span></td>
                             <td className="text-right font-mono" style={{ color: 'var(--text-tertiary)' }}>
@@ -685,43 +863,52 @@ export default function DailyKitchen() {
                               {ing.amount > 0 ? `₹${formatNumber(ing.amount)}` : '-'}
                             </td>
                           </tr>
-                        ))}
+                          );
+                        })}
                         <tr style={{ background: 'var(--bg-tertiary)' }}>
-                          <td colSpan={5} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
-                            Total Estimated Recipe Cost
+                          <td colSpan={7} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                            Ingredient Cost
                           </td>
                           <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--success)', fontSize: 15 }}>
                             ₹{formatNumber(d.totalCost)}
                           </td>
                         </tr>
+                        <tr style={{ background: 'var(--accent-subtle)' }}>
+                          <td colSpan={7} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                            Adjusted Cost ({formatNumber(costMultiplier, 2)}x)
+                          </td>
+                          <td className="text-right font-mono" style={{ fontWeight: 700, color: 'var(--accent)', fontSize: 15 }}>
+                            ₹{formatNumber(d.adjustedCost)}
+                          </td>
+                        </tr>
                       </tbody>
                     </table>
-                  </div>
+                    </div>
 
-                  {/* Hindi Cooking Process (विधि) */}
-                  {d.cookingSteps.length > 0 && (
-                    <div className="card-body" style={{ borderTop: '1px solid var(--border-subtle)' }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 'var(--space-md)', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <span>🍳</span> Cooking Process (बनाने की विधि)
-                      </div>
-                      <div className="recipe-steps-list">
+                    {/* Bilingual Cooking Process (विधि) */}
+                    {d.cookingSteps.length > 0 && (
+                      <div className="recipe-procedure-panel">
+                      <div className="recipe-procedure-heading"><span>🍳</span> Cooking Process / बनाने की विधि</div>
+                      <div className="recipe-procedure-list">
                         {d.cookingSteps.map(step => (
-                          <div key={step.stepNumber} className="recipe-step">
+                          <div key={step.stepNumber} className="recipe-procedure-row">
                             <div className="step-number">{step.stepNumber}</div>
-                            <div style={{ flex: 1 }}>
-                              <div style={{ fontSize: 11, color: 'var(--accent)', marginBottom: 3, fontWeight: 600 }}>
-                                {step.ingredient}
-                              </div>
-                              <div className="step-text">{step.text}</div>
+                            <div className="recipe-procedure-copy">
+                              <div className="recipe-procedure-english">{step.english || '—'}</div>
+                              <div className="recipe-procedure-hindi">{step.hindi || '—'}</div>
+                              <div className="recipe-procedure-ingredients">{step.ingredients.join(', ') || 'General step'}</div>
                             </div>
                           </div>
                         ))}
                       </div>
+                      </div>
+                    )}
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             })}
+            </div>
           </div>
         );
       })}
@@ -784,7 +971,10 @@ export default function DailyKitchen() {
                           {meal}:
                         </span>
                         <span style={{ color: 'var(--text-primary)' }}>
-                          {dishes.map(d => `${d.dish} (${d.serving} ${recipes.find(r => r.name === d.dish)?.yieldUnit === 'pcs' ? 'pcs' : 'ml'})`).join(', ')}
+                          {dishes.map(d => {
+                            const recipe = recipes.find(r => r.name === d.dish);
+                            return `${d.dish} (${d.serving} ${getRecipeServingUnit(recipe) === 'pieces' ? 'pcs' : 'ml'})`;
+                          }).join(', ')}
                         </span>
                       </div>
                     );
@@ -820,24 +1010,36 @@ export default function DailyKitchen() {
                     </button>
                   </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 'var(--space-md)' }}>
-                    {departments.map(dept => (
-                      <div key={dept.id} className="dept-input-card" style={{ padding: '10px 14px' }}>
+                  <div className="dept-selector">
+                    <label className="form-label" htmlFor="generate-department-select">Department head</label>
+                    <select
+                      id="generate-department-select"
+                      className="form-select"
+                      value={selectedGenerateDepartment?.id || ''}
+                      onChange={e => setSelectedGenerateDepartmentId(e.target.value)}
+                      aria-label="Select department head for production plan"
+                    >
+                      {departments.map(dept => (
+                        <option key={dept.id} value={dept.id}>{dept.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {selectedGenerateDepartment && (
+                      <div className="dept-input-card" style={{ padding: '10px 14px' }}>
                         <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{dept.name}</div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {dept.defaultCount} people</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{selectedGenerateDepartment.name}</div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {selectedGenerateDepartment.defaultCount} people</div>
                         </div>
                         <input
                           type="number"
                           className="form-input"
-                          value={generateCounts[dept.id] ?? ''}
-                          onChange={e => setGenerateCounts(prev => ({ ...prev, [dept.id]: e.target.value }))}
+                          value={generateCounts[selectedGenerateDepartment.id] ?? ''}
+                          onChange={e => setGenerateCounts(prev => ({ ...prev, [selectedGenerateDepartment.id]: e.target.value }))}
                           style={{ width: 75, textAlign: 'center', fontWeight: 700, fontSize: 14 }}
                           min="0"
                         />
                       </div>
-                    ))}
-                  </div>
+                  )}
                 </div>
 
                 {/* Headcount Live Total Summary */}

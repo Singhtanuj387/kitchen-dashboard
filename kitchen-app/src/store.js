@@ -19,6 +19,13 @@ const STORAGE_KEYS = {
   AMOUNT_CLAIMS: 'kd_amount_claims',
   RECIPE_HISTORY: 'kd_recipe_history',
   UNITS: 'kd_units',
+  COST_SETTINGS: 'kd_cost_settings',
+  PURCHASES: 'kd_purchases',
+  EXPENSES: 'kd_expenses',
+};
+
+const DEFAULT_COST_SETTINGS = {
+  multiplier: 1.2,
 };
 
 // ── Helper Functions ──
@@ -367,6 +374,26 @@ export const store = {
     return units;
   },
 
+  // ── Cost Settings ──
+  getCostSettings() {
+    const settings = loadFromStorage(STORAGE_KEYS.COST_SETTINGS, DEFAULT_COST_SETTINGS);
+    const multiplier = Number(settings?.multiplier);
+    if (!Number.isFinite(multiplier) || multiplier < 1) {
+      return DEFAULT_COST_SETTINGS;
+    }
+    return { multiplier };
+  },
+
+  saveCostSettings(settings) {
+    const multiplier = Number(settings?.multiplier);
+    if (!Number.isFinite(multiplier) || multiplier < 1) {
+      throw new Error('Cost multiplier must be a number greater than or equal to 1.');
+    }
+    const nextSettings = { multiplier: Math.round(multiplier * 100) / 100 };
+    saveToStorage(STORAGE_KEYS.COST_SETTINGS, nextSettings);
+    return nextSettings;
+  },
+
   // ── Recipes ──
   getRecipes() {
     const recipes = loadFromStorage(STORAGE_KEYS.RECIPES);
@@ -509,6 +536,70 @@ export const store = {
     saveToStorage(STORAGE_KEYS.DAILY_KITCHEN, all);
   },
 
+  getPurchases() {
+    return loadFromStorage(STORAGE_KEYS.PURCHASES, []);
+  },
+
+  savePurchases(purchases) {
+    saveToStorage(STORAGE_KEYS.PURCHASES, purchases);
+  },
+
+  addPurchase(purchase) {
+    const purchases = this.getPurchases();
+    const item = { ...purchase, id: generateId(), createdAt: new Date().toISOString() };
+    purchases.unshift(item);
+    this.savePurchases(purchases);
+    return item;
+  },
+
+  updatePurchase(id, updates) {
+    const purchases = this.getPurchases();
+    const index = purchases.findIndex(item => item.id === id);
+    if (index !== -1) {
+      purchases[index] = { ...purchases[index], ...updates };
+      this.savePurchases(purchases);
+    }
+    return purchases;
+  },
+
+  deletePurchase(id) {
+    const purchases = this.getPurchases().filter(item => item.id !== id);
+    this.savePurchases(purchases);
+    return purchases;
+  },
+
+  getExpenses() {
+    return loadFromStorage(STORAGE_KEYS.EXPENSES, []);
+  },
+
+  saveExpenses(expenses) {
+    saveToStorage(STORAGE_KEYS.EXPENSES, expenses);
+  },
+
+  addExpense(expense) {
+    const expenses = this.getExpenses();
+    const item = { ...expense, id: generateId(), createdAt: new Date().toISOString() };
+    expenses.unshift(item);
+    this.saveExpenses(expenses);
+    return item;
+  },
+
+  updateExpense(id, updates) {
+    const expenses = this.getExpenses();
+    const index = expenses.findIndex(item => item.id === id);
+    if (index !== -1) {
+      expenses[index] = { ...expenses[index], ...updates };
+      this.saveExpenses(expenses);
+    }
+    return expenses;
+  },
+
+  deleteExpense(id) {
+    const expenses = this.getExpenses().filter(item => item.id !== id);
+    this.saveExpenses(expenses);
+    return expenses;
+  },
+
   // ── Amount Claims ──
   getAmountClaims() {
     const claims = loadFromStorage(STORAGE_KEYS.AMOUNT_CLAIMS);
@@ -617,6 +708,9 @@ export const store = {
       [STORAGE_KEYS.AMOUNT_CLAIMS]: this.getAmountClaims(),
       [STORAGE_KEYS.RECIPE_HISTORY]: this.getRecipeHistory(),
       [STORAGE_KEYS.UNITS]: this.getUnits(),
+      [STORAGE_KEYS.COST_SETTINGS]: this.getCostSettings(),
+      [STORAGE_KEYS.PURCHASES]: this.getPurchases(),
+      [STORAGE_KEYS.EXPENSES]: this.getExpenses(),
     };
 
     const promises = Object.entries(payload).map(([k, v]) => syncDocToFirestore('kitchen_data', k, v));
@@ -855,6 +949,40 @@ export function calculateRequiredQty(standardQty, requiredYield, standardYield) 
   return standardQty * (requiredYield / standardYield);
 }
 
+export function getRecipeServingUnit(recipe) {
+  return recipe?.servingUnit === 'pieces' || recipe?.servingUnit === 'pcs' || recipe?.yieldUnit === 'pcs'
+    ? 'pieces'
+    : 'ml';
+}
+
+export function getRecipeProcedureSteps(recipe) {
+  if (Array.isArray(recipe?.procedureSteps) && recipe.procedureSteps.length > 0) {
+    return recipe.procedureSteps.map((step, index) => ({
+      stepNumber: index + 1,
+      english: step.english || '',
+      hindi: step.hindi || '',
+      ingredients: Array.isArray(step.ingredients) ? step.ingredients : [],
+    }));
+  }
+
+  const legacySteps = [];
+  (recipe?.ingredients || []).forEach(ingredient => {
+    if (!ingredient.cookingProcess?.trim()) return;
+    const existing = legacySteps.find(step => step.hindi === ingredient.cookingProcess.trim());
+    if (existing) {
+      existing.ingredients.push(ingredient.name);
+    } else {
+      legacySteps.push({
+        stepNumber: legacySteps.length + 1,
+        english: '',
+        hindi: ingredient.cookingProcess.trim(),
+        ingredients: [ingredient.name],
+      });
+    }
+  });
+  return legacySteps;
+}
+
 export function findMasterItem(ingredientName, masterList) {
   if (!ingredientName || !masterList) return null;
   const cleanName = ingredientName.trim().toLowerCase();
@@ -868,8 +996,38 @@ export function findMasterItem(ingredientName, masterList) {
   }) || null;
 }
 
-export function calculateIngredientCost(requiredQty, pricePerUnit) {
-  return requiredQty * pricePerUnit;
+function normalizeUnit(unit) {
+  return String(unit || '').trim().toLowerCase().replace(/\s+/g, '');
+}
+
+const UNIT_TO_BASE = {
+  g: { group: 'mass', factor: 1 },
+  gm: { group: 'mass', factor: 1 },
+  gram: { group: 'mass', factor: 1 },
+  grams: { group: 'mass', factor: 1 },
+  kg: { group: 'mass', factor: 1000 },
+  kilo: { group: 'mass', factor: 1000 },
+  kilos: { group: 'mass', factor: 1000 },
+  kilogram: { group: 'mass', factor: 1000 },
+  kilograms: { group: 'mass', factor: 1000 },
+  ml: { group: 'volume', factor: 1 },
+  millilitre: { group: 'volume', factor: 1 },
+  milliliter: { group: 'volume', factor: 1 },
+  l: { group: 'volume', factor: 1000 },
+  litre: { group: 'volume', factor: 1000 },
+  liter: { group: 'volume', factor: 1000 },
+};
+
+export function convertQuantity(quantity, fromUnit, toUnit) {
+  const from = UNIT_TO_BASE[normalizeUnit(fromUnit)];
+  const to = UNIT_TO_BASE[normalizeUnit(toUnit)];
+  if (!from || !to || from.group !== to.group) return quantity;
+  return quantity * from.factor / to.factor;
+}
+
+export function calculateIngredientCost(requiredQty, pricePerUnit, quantityUnit, priceUnit) {
+  const pricedQuantity = convertQuantity(requiredQty, quantityUnit, priceUnit);
+  return pricedQuantity * pricePerUnit;
 }
 
 export function calculateTotalRecipeCost(recipe, requiredYield, masterList) {
@@ -878,7 +1036,7 @@ export function calculateTotalRecipeCost(recipe, requiredYield, masterList) {
     const reqQty = calculateRequiredQty(ing.standardQty, requiredYield, recipe.standardYield);
     const masterItem = findMasterItem(ing.name, masterList);
     if (masterItem) {
-      total += reqQty * masterItem.pricePerUnit;
+      total += calculateIngredientCost(reqQty, masterItem.pricePerUnit, ing.unit, masterItem.unit);
     }
   }
   return total;

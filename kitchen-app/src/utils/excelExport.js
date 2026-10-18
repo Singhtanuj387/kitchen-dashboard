@@ -18,7 +18,9 @@ export function exportDayToExcel(entry) {
     ['Total Production Headcount', `${entry.totalPeople} People`],
     ['Chargeable Headcount', `${entry.chargeablePeople || 0} People`],
     ['Non-Chargeable (Temple)', `${entry.nonChargeablePeople || 0} People`],
-    ['Total Estimated Day Cost', `₹${formatNumber(entry.totalCost, 0)}`],
+    ['Ingredient Cost', `₹${formatNumber(entry.totalCost, 0)}`],
+    ['Adjusted Cost', `₹${formatNumber(entry.adjustedCost ?? entry.totalCost, 0)}`],
+    ['Cost Multiplier', `${formatNumber(entry.costMultiplier || 1, 2)}x`],
     [],
     ['DEPARTMENT HEADCOUNT BREAKDOWN'],
     ['#', 'Department Name', 'Headcount', 'Billing Status'],
@@ -35,7 +37,7 @@ export function exportDayToExcel(entry) {
 
   summaryData.push([]);
   summaryData.push(['SCHEDULED MEALS & BATCH COSTS']);
-  summaryData.push(['Meal', 'Dish Name', 'Serving / Person', 'Required Yield', 'Estimated Cost (₹)']);
+  summaryData.push(['Meal', 'Dish Name', 'Serving / Person', 'Required Yield', 'Ingredient Cost (₹)', 'Adjusted Cost (₹)']);
 
   const meals = ['breakfast', 'lunch', 'dinner'];
   meals.forEach(m => {
@@ -46,7 +48,8 @@ export function exportDayToExcel(entry) {
         d.dish,
         `${d.serving} ${d.servingUnit || 'ml'}`,
         `${d.requiredYield} ${d.yieldUnit || 'L'}`,
-        parseFloat(formatNumber(d.totalCost, 2))
+        parseFloat(formatNumber(d.totalCost, 2)),
+        parseFloat(formatNumber(d.adjustedCost ?? d.totalCost, 2))
       ]);
     });
   });
@@ -57,6 +60,7 @@ export function exportDayToExcel(entry) {
     { wch: 30 },
     { wch: 22 },
     { wch: 22 },
+    { wch: 20 },
     { wch: 20 },
   ];
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Production Summary');
@@ -69,7 +73,9 @@ export function exportDayToExcel(entry) {
       'Required Yield',
       'Ingredient Name',
       'Standard Qty',
-      'Required Qty',
+      'Calculated Qty',
+      'Final Qty',
+      'Real Qty',
       'Unit',
       'Rate (₹)',
       'Estimated Amount (₹)',
@@ -87,11 +93,21 @@ export function exportDayToExcel(entry) {
           `${d.requiredYield} ${d.yieldUnit || 'L'}`,
           ing.name,
           ing.standardQty,
-          parseFloat(formatNumber(ing.requiredQty, 2)),
+          parseFloat(formatNumber(ing.calculatedQty ?? ing.requiredQty, 2)),
+          parseFloat(formatNumber(ing.finalQty ?? ing.requiredQty, 2)),
+          ing.realQty === '' || ing.realQty === undefined ? '' : parseFloat(formatNumber(ing.realQty, 2)),
           ing.unit,
           ing.rate || 0,
           parseFloat(formatNumber(ing.amount, 2)),
-          ing.cookingProcess || '-'
+          ing.cookingProcess ||
+            (() => {
+              const step = d.cookingSteps?.find(item =>
+                item.ingredient === ing.name || item.ingredients?.includes(ing.name)
+              );
+              if (!step) return '-';
+              if (step.english || step.hindi) return [step.english, step.hindi].filter(Boolean).join('\n');
+              return step.text || '-';
+            })()
         ]);
       });
     });
@@ -135,7 +151,8 @@ export function exportAllHistoryToExcel(historyList) {
       'Breakfast Dishes',
       'Lunch Dishes',
       'Dinner Dishes',
-      'Total Estimated Cost (₹)',
+      'Ingredient Cost (₹)',
+      'Adjusted Cost (₹)',
       'Generated Timestamp'
     ]
   ];
@@ -158,6 +175,7 @@ export function exportAllHistoryToExcel(historyList) {
       lDishes,
       dDishes,
       parseFloat(formatNumber(entry.totalCost, 2)),
+      parseFloat(formatNumber(entry.adjustedCost ?? entry.totalCost, 2)),
       entry.generatedAt ? new Date(entry.generatedAt).toLocaleString('en-IN') : '-'
     ]);
   });
@@ -168,6 +186,7 @@ export function exportAllHistoryToExcel(historyList) {
     { wch: 14 },
     { wch: 16 },
     { wch: 20 },
+    { wch: 22 },
     { wch: 22 },
     { wch: 28 },
     { wch: 32 },
@@ -185,7 +204,9 @@ export function exportAllHistoryToExcel(historyList) {
       'Recipe Name',
       'Required Yield',
       'Ingredient Name',
-      'Required Qty',
+      'Calculated Qty',
+      'Final Qty',
+      'Real Qty',
       'Unit',
       'Rate (₹)',
       'Amount (₹)'
@@ -204,7 +225,9 @@ export function exportAllHistoryToExcel(historyList) {
             d.dish,
             `${d.requiredYield} ${d.yieldUnit || 'L'}`,
             ing.name,
-            parseFloat(formatNumber(ing.requiredQty, 2)),
+            parseFloat(formatNumber(ing.calculatedQty ?? ing.requiredQty, 2)),
+            parseFloat(formatNumber(ing.finalQty ?? ing.requiredQty, 2)),
+            ing.realQty === '' || ing.realQty === undefined ? '' : parseFloat(formatNumber(ing.realQty, 2)),
             ing.unit,
             ing.rate || 0,
             parseFloat(formatNumber(ing.amount, 2))
