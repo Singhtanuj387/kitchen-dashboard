@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, Fragment } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { store, getYearMonth, getDateString, calculateRequiredQty, formatNumber, findMasterItem, getRecipeServingUnit, calculateIngredientCost, getRecipeProcedureSteps } from '../store';
 import { exportDayToExcel } from '../utils/excelExport';
@@ -14,12 +14,84 @@ export default function DailyKitchen() {
     depts.forEach(d => { counts[d.id] = d.defaultCount; });
     return counts;
   });
-  const [selectedDepartmentId, setSelectedDepartmentId] = useState(() => store.getDepartments()[0]?.id || '');
   const [activeTab, setActiveTab] = useState('all');
   const [expandedRecipes, setExpandedRecipes] = useState({});
   const [ingredientOverrides, setIngredientOverrides] = useState({});
   const [realIngredientQuantities, setRealIngredientQuantities] = useState({});
   const [toastMessage, setToastMessage] = useState('');
+
+  const departments = store.getDepartments();
+  const recipes = store.getRecipes();
+  const masterList = store.getMasterList();
+  const costMultiplier = store.getCostSettings().multiplier;
+
+  // Load or initialize dishes for selectedDate
+  function getInitialDishes(dateStr, currentCounts) {
+    const saved = store.getDailyKitchen(dateStr);
+    const depts = store.getDepartments();
+    const allRecipes = store.getRecipes();
+
+    if (saved && saved.meals && (saved.meals.breakfast?.length || saved.meals.lunch?.length || saved.meals.dinner?.length)) {
+      const normalized = { breakfast: [], lunch: [], dinner: [] };
+      ['breakfast', 'lunch', 'dinner'].forEach(m => {
+        normalized[m] = (saved.meals[m] || []).map(dish => {
+          const rec = allRecipes.find(r => r.name.trim().toLowerCase() === (dish.dish || '').trim().toLowerCase());
+          const isPieces = rec ? getRecipeServingUnit(rec) === 'pieces' : false;
+          const deptQuantities = {};
+          depts.forEach(d => {
+            if (dish.deptQuantities && dish.deptQuantities[d.id] !== undefined) {
+              deptQuantities[d.id] = dish.deptQuantities[d.id];
+            } else if (Array.isArray(dish.departments) && dish.departments.length > 0) {
+              deptQuantities[d.id] = dish.departments.includes(d.id) ? (parseInt(currentCounts[d.id], 10) || d.defaultCount) : 0;
+            } else {
+              deptQuantities[d.id] = parseInt(currentCounts[d.id], 10) || d.defaultCount;
+            }
+          });
+          return {
+            dish: dish.dish || '',
+            serving: dish.serving !== undefined ? dish.serving : (isPieces ? 3 : 200),
+            servingUnit: dish.servingUnit || (isPieces ? 'pcs' : 'ml'),
+            deptQuantities,
+          };
+        });
+      });
+      return normalized;
+    }
+
+    // Otherwise load from monthly menu
+    const dObj = new Date(dateStr + 'T00:00:00');
+    const ym = getYearMonth(dObj);
+    const monthMenu = store.getMonthlyMenu(ym);
+    const rawDayMenu = monthMenu[dObj.getDate()] || {};
+
+    const meals = { breakfast: [], lunch: [], dinner: [] };
+    ['breakfast', 'lunch', 'dinner'].forEach(m => {
+      meals[m] = (rawDayMenu[m] || []).map(item => {
+        const rec = allRecipes.find(r => r.name.trim().toLowerCase() === (item.dish || '').trim().toLowerCase());
+        const isPieces = rec ? getRecipeServingUnit(rec) === 'pieces' : false;
+        const defaultServing = item.serving !== undefined ? item.serving : (isPieces ? 3 : 200);
+
+        const deptQuantities = {};
+        depts.forEach(d => {
+          if (Array.isArray(item.departments) && item.departments.length > 0) {
+            deptQuantities[d.id] = item.departments.includes(d.id) ? (parseInt(currentCounts[d.id], 10) || d.defaultCount) : 0;
+          } else {
+            deptQuantities[d.id] = parseInt(currentCounts[d.id], 10) || d.defaultCount;
+          }
+        });
+
+        return {
+          dish: item.dish,
+          serving: defaultServing,
+          servingUnit: isPieces ? 'pcs' : 'ml',
+          deptQuantities,
+        };
+      });
+    });
+    return meals;
+  }
+
+  const [dailyDishes, setDailyDishes] = useState(() => getInitialDishes(selectedDate, deptCounts));
 
   useEffect(() => {
     if (urlDate && urlDate !== selectedDate) {
@@ -31,23 +103,19 @@ export default function DailyKitchen() {
   const [showGenerateModal, setShowGenerateModal] = useState(false);
   const [generateDate, setGenerateDate] = useState('');
   const [generateCounts, setGenerateCounts] = useState({});
-  const [selectedGenerateDepartmentId, setSelectedGenerateDepartmentId] = useState('');
 
-  const departments = store.getDepartments();
-  const recipes = store.getRecipes();
-  const masterList = store.getMasterList();
-  const costMultiplier = store.getCostSettings().multiplier;
-  const selectedDepartment = departments.find(dept => dept.id === selectedDepartmentId) || departments[0];
-  const selectedGenerateDepartment = departments.find(dept => dept.id === selectedGenerateDepartmentId) || departments[0];
-
-  // Load saved counts if available when selectedDate changes
+  // Load saved counts & dishes when selectedDate changes
   useEffect(() => {
     const saved = store.getDailyKitchen(selectedDate);
+    const counts = {};
     if (saved && saved.departments && saved.departments.length > 0) {
-      const counts = {};
       saved.departments.forEach(d => { counts[d.id] = d.count; });
       setDeptCounts(counts);
+    } else {
+      departments.forEach(d => { counts[d.id] = d.defaultCount; });
+      setDeptCounts(counts);
     }
+    setDailyDishes(getInitialDishes(selectedDate, counts));
     setIngredientOverrides(saved?.ingredientOverrides || {});
     setRealIngredientQuantities(saved?.realIngredientQuantities || {});
   }, [selectedDate]);
@@ -119,17 +187,19 @@ export default function DailyKitchen() {
       }
     });
     setGenerateCounts(initialCounts);
-    setSelectedGenerateDepartmentId(prev => departments.some(d => d.id === prev) ? prev : (departments[0]?.id || ''));
     setShowGenerateModal(true);
   }
 
-  // Helper to build a comprehensive history snapshot for any date
+  // Helper to compute dish headcount from deptQuantities
   function getDishHeadcount(dishItem, countsMap, fallbackTotal) {
+    if (dishItem?.deptQuantities && Object.keys(dishItem.deptQuantities).length > 0) {
+      return Object.values(dishItem.deptQuantities).reduce((sum, q) => sum + (parseInt(q, 10) || 0), 0);
+    }
     if (!Array.isArray(dishItem?.departments) || dishItem.departments.length === 0) return fallbackTotal;
     return dishItem.departments.reduce((sum, departmentId) => sum + (parseInt(countsMap[departmentId], 10) || 0), 0);
   }
 
-  function buildDaySnapshot(dateStr, countsMap, totalCount, chargeableCount, nonChargeableCount, menuObj, overrides = {}, realQuantities = {}) {
+  function buildDaySnapshot(dateStr, countsMap, totalCount, chargeableCount, nonChargeableCount, dishesObj, overrides = {}, realQuantities = {}) {
     const dObj = new Date(dateStr + 'T00:00:00');
     const dFormatted = dObj.toLocaleDateString('en-IN', {
       weekday: 'long',
@@ -142,14 +212,15 @@ export default function DailyKitchen() {
     let dayTotalCost = 0;
 
     ['breakfast', 'lunch', 'dinner'].forEach(m => {
-      const list = menuObj[m] || [];
+      const list = dishesObj[m] || [];
       mealsObj[m] = list.map((item, dishIdx) => {
-        const rec = recipes.find(r => r.name.trim().toLowerCase() === item.dish.trim().toLowerCase());
+        const rec = recipes.find(r => r.name.trim().toLowerCase() === (item.dish || '').trim().toLowerCase());
         if (!rec) {
           return {
             dish: item.dish,
             serving: item.serving || 0,
-            servingUnit: 'ml',
+            servingUnit: item.servingUnit || 'ml',
+            deptQuantities: item.deptQuantities || {},
             requiredYield: 0,
             yieldUnit: 'L',
             totalCost: 0,
@@ -160,7 +231,7 @@ export default function DailyKitchen() {
         }
 
         const isPieces = getRecipeServingUnit(rec) === 'pieces';
-        const servingAmount = item.serving || 0;
+        const servingAmount = parseFloat(item.serving) || 0;
         const dishHeadcount = getDishHeadcount(item, countsMap, totalCount);
         const requiredYield = isPieces
           ? Math.round(dishHeadcount * servingAmount)
@@ -199,10 +270,10 @@ export default function DailyKitchen() {
         return {
           dish: item.dish,
           serving: item.serving,
-          departments: item.departments || [],
+          servingUnit: isPieces ? 'pcs' : 'ml',
+          deptQuantities: item.deptQuantities || {},
           dishHeadcount,
           calculatedYield: requiredYield,
-          servingUnit: isPieces ? 'pcs' : 'ml',
           requiredYield,
           yieldUnit: rec.yieldUnit || 'L',
           totalCost: dishCost,
@@ -235,15 +306,43 @@ export default function DailyKitchen() {
   }
 
   function handleConfirmGenerate() {
+    const nextObj = new Date(generateDate + 'T00:00:00');
+    const ym = getYearMonth(nextObj);
+    const monthMenu = store.getMonthlyMenu(ym);
+    const rawDayMenu = monthMenu[nextObj.getDate()] || {};
+
+    const meals = { breakfast: [], lunch: [], dinner: [] };
+    ['breakfast', 'lunch', 'dinner'].forEach(m => {
+      meals[m] = (rawDayMenu[m] || []).map(item => {
+        const rec = recipes.find(r => r.name.trim().toLowerCase() === (item.dish || '').trim().toLowerCase());
+        const isPieces = rec ? getRecipeServingUnit(rec) === 'pieces' : false;
+        const defaultServing = item.serving !== undefined ? item.serving : (isPieces ? 3 : 200);
+
+        const deptQuantities = {};
+        departments.forEach(d => {
+          deptQuantities[d.id] = parseInt(generateCounts[d.id], 10) || d.defaultCount;
+        });
+
+        return {
+          dish: item.dish,
+          serving: defaultServing,
+          servingUnit: isPieces ? 'pcs' : 'ml',
+          deptQuantities,
+        };
+      });
+    });
+
     store.saveDailyKitchen(generateDate, {
       date: generateDate,
       departments: departments.map(d => ({
         id: d.id,
         name: d.name,
-        count: parseInt(generateCounts[d.id], 10) || 0
+        count: parseInt(generateCounts[d.id], 10) || 0,
+        isChargeable: d.isChargeable !== false
       })),
       totalPeople: generateTotalPeople,
-      menu: generateDayMenu,
+      meals,
+      menu: meals,
       ingredientOverrides: {},
       realIngredientQuantities: {},
     });
@@ -255,12 +354,13 @@ export default function DailyKitchen() {
       generateTotalPeople,
       generateChargeablePeople,
       generateNonChargeablePeople,
-      generateDayMenu
+      meals
     );
     store.addRecipeHistory(historySnapshot);
 
     setSelectedDate(generateDate);
     setDeptCounts(generateCounts);
+    setDailyDishes(meals);
     setShowGenerateModal(false);
     setToastMessage(`✨ Recipes generated & saved to History for ${generateDateFormatted}!`);
     setTimeout(() => setToastMessage(''), 3500);
@@ -270,15 +370,169 @@ export default function DailyKitchen() {
     return `${mealKey}-${dishIdx}-${ingredientIdx}`;
   }
 
-  function persistDailyKitchen(overrides = ingredientOverrides) {
+  function persistDailyKitchen(dishesToSave = dailyDishes, countsToSave = deptCounts, overrides = ingredientOverrides) {
+    const totalCount = Object.values(countsToSave).reduce((sum, c) => sum + (parseInt(c, 10) || 0), 0);
     store.saveDailyKitchen(selectedDate, {
       date: selectedDate,
-      departments: departments.map(d => ({ id: d.id, name: d.name, count: parseInt(deptCounts[d.id], 10) || 0 })),
-      totalPeople,
-      menu: dayMenu,
+      departments: departments.map(d => ({
+        id: d.id,
+        name: d.name,
+        count: parseInt(countsToSave[d.id], 10) || 0,
+        isChargeable: d.isChargeable !== false
+      })),
+      totalPeople: totalCount,
+      meals: dishesToSave,
+      menu: dishesToSave,
       ingredientOverrides: overrides,
       realIngredientQuantities,
     });
+  }
+
+  function handleDayDeptCountChange(deptId, value) {
+    const cleanVal = value === '' ? '' : Math.max(0, parseInt(value, 10) || 0);
+    const newCounts = { ...deptCounts, [deptId]: cleanVal };
+    setDeptCounts(newCounts);
+
+    if (typeof cleanVal === 'number') {
+      setDailyDishes(prev => {
+        const updated = { ...prev };
+        ['breakfast', 'lunch', 'dinner'].forEach(m => {
+          updated[m] = (prev[m] || []).map(dish => {
+            const currentDishQty = dish.deptQuantities?.[deptId];
+            if (currentDishQty === 0) {
+              return dish; // Keep manually eliminated department as 0
+            }
+            return {
+              ...dish,
+              deptQuantities: {
+                ...dish.deptQuantities,
+                [deptId]: cleanVal
+              }
+            };
+          });
+        });
+        persistDailyKitchen(updated, newCounts);
+        return updated;
+      });
+    }
+  }
+
+  function handleDeptQtyChange(mealType, dishIdx, deptId, value) {
+    const cleanVal = value === '' ? '' : Math.max(0, parseInt(value, 10) || 0);
+    setDailyDishes(prev => {
+      const updated = {
+        ...prev,
+        [mealType]: prev[mealType].map((d, i) => {
+          if (i !== dishIdx) return d;
+          return {
+            ...d,
+            deptQuantities: {
+              ...d.deptQuantities,
+              [deptId]: cleanVal
+            }
+          };
+        })
+      };
+      persistDailyKitchen(updated);
+      return updated;
+    });
+  }
+
+  function handleToggleZeroDept(mealType, dishIdx, deptId) {
+    const currentVal = parseInt(dailyDishes[mealType]?.[dishIdx]?.deptQuantities?.[deptId], 10) || 0;
+    const dayCount = parseInt(deptCounts[deptId], 10) || 0;
+    const nextVal = currentVal > 0 ? 0 : dayCount;
+    handleDeptQtyChange(mealType, dishIdx, deptId, nextVal);
+  }
+
+  function handleServingChange(mealType, dishIdx, value) {
+    const cleanVal = value === '' ? '' : parseFloat(value);
+    setDailyDishes(prev => {
+      const updated = {
+        ...prev,
+        [mealType]: prev[mealType].map((d, i) => {
+          if (i !== dishIdx) return d;
+          return { ...d, serving: cleanVal };
+        })
+      };
+      persistDailyKitchen(updated);
+      return updated;
+    });
+  }
+
+  function handleChangeDishName(mealType, dishIdx, newDishName) {
+    const rec = recipes.find(r => r.name === newDishName);
+    const isPieces = rec ? getRecipeServingUnit(rec) === 'pieces' : false;
+    setDailyDishes(prev => {
+      const updated = {
+        ...prev,
+        [mealType]: prev[mealType].map((d, i) => {
+          if (i !== dishIdx) return d;
+          return {
+            ...d,
+            dish: newDishName,
+            serving: isPieces ? 3 : 200,
+            servingUnit: isPieces ? 'pcs' : 'ml',
+          };
+        })
+      };
+      persistDailyKitchen(updated);
+      return updated;
+    });
+  }
+
+  function handleAddDishToMeal(mealType) {
+    const firstRecipe = recipes[0]?.name || '';
+    const rec = recipes.find(r => r.name === firstRecipe);
+    const isPieces = rec ? getRecipeServingUnit(rec) === 'pieces' : false;
+    const deptQuantities = {};
+    departments.forEach(d => {
+      deptQuantities[d.id] = parseInt(deptCounts[d.id], 10) || d.defaultCount;
+    });
+    const newDish = {
+      dish: firstRecipe,
+      serving: isPieces ? 3 : 200,
+      servingUnit: isPieces ? 'pcs' : 'ml',
+      deptQuantities,
+    };
+    setDailyDishes(prev => {
+      const updated = {
+        ...prev,
+        [mealType]: [...(prev[mealType] || []), newDish]
+      };
+      persistDailyKitchen(updated);
+      return updated;
+    });
+  }
+
+  function handleRemoveDishFromMeal(mealType, dishIdx) {
+    setDailyDishes(prev => {
+      const updated = {
+        ...prev,
+        [mealType]: prev[mealType].filter((_, i) => i !== dishIdx)
+      };
+      persistDailyKitchen(updated);
+      return updated;
+    });
+  }
+
+  function handleResetAllocations() {
+    setDailyDishes(prev => {
+      const updated = { ...prev };
+      ['breakfast', 'lunch', 'dinner'].forEach(m => {
+        updated[m] = (prev[m] || []).map(dish => {
+          const deptQuantities = {};
+          departments.forEach(d => {
+            deptQuantities[d.id] = parseInt(deptCounts[d.id], 10) || d.defaultCount;
+          });
+          return { ...dish, deptQuantities };
+        });
+      });
+      persistDailyKitchen(updated);
+      return updated;
+    });
+    setToastMessage('↺ All department allocations reset to full day headcount');
+    setTimeout(() => setToastMessage(''), 2500);
   }
 
   function handleIngredientQuantityChange(mealKey, dishIdx, ingredientIdx, value) {
@@ -295,7 +549,7 @@ export default function DailyKitchen() {
     const nextOverrides = { ...ingredientOverrides };
     delete nextOverrides[key];
     setIngredientOverrides(nextOverrides);
-    persistDailyKitchen(nextOverrides);
+    persistDailyKitchen(dailyDishes, deptCounts, nextOverrides);
   }
 
   function handleRealIngredientQuantityChange(mealKey, dishIdx, ingredientIdx, value) {
@@ -304,9 +558,10 @@ export default function DailyKitchen() {
     setRealIngredientQuantities(nextValues);
     store.saveDailyKitchen(selectedDate, {
       date: selectedDate,
-      departments: departments.map(d => ({ id: d.id, name: d.name, count: parseInt(deptCounts[d.id], 10) || 0 })),
+      departments: departments.map(d => ({ id: d.id, name: d.name, count: parseInt(deptCounts[d.id], 10) || 0, isChargeable: d.isChargeable !== false })),
       totalPeople,
-      menu: dayMenu,
+      meals: dailyDishes,
+      menu: dailyDishes,
       ingredientOverrides,
       realIngredientQuantities: nextValues,
     });
@@ -314,11 +569,12 @@ export default function DailyKitchen() {
 
   // Calculate full recipe details for a dish
   function calculateDishDetails(dishItem, mealKey, dishIdx) {
+    if (!dishItem || !dishItem.dish) return null;
     const recipe = recipes.find(r => r.name.trim().toLowerCase() === dishItem.dish.trim().toLowerCase());
     if (!recipe) return null;
 
     // serving is in ml per person (or pcs per person for items like rotis/samosas/bananas)
-    const servingAmount = dishItem.serving || 0;
+    const servingAmount = parseFloat(dishItem.serving) || 0;
     const dishHeadcount = getDishHeadcount(dishItem, deptCounts, totalPeople);
     const isPieces = getRecipeServingUnit(recipe) === 'pieces';
     const totalYield = isPieces
@@ -373,13 +629,13 @@ export default function DailyKitchen() {
     const meals = ['breakfast', 'lunch', 'dinner'];
     const result = {};
     meals.forEach(m => {
-      result[m] = (dayMenu[m] || []).map((dish, dishIdx) => ({
+      result[m] = (dailyDishes[m] || []).map((dish, dishIdx) => ({
         ...dish,
         details: calculateDishDetails(dish, m, dishIdx),
       }));
     });
     return result;
-  }, [dayMenu, totalPeople, recipes, masterList, ingredientOverrides, realIngredientQuantities, deptCounts]);
+  }, [dailyDishes, totalPeople, recipes, masterList, ingredientOverrides, realIngredientQuantities, deptCounts]);
 
   // Total cost for the day
   const dayCost = useMemo(() => {
@@ -407,7 +663,7 @@ export default function DailyKitchen() {
       totalPeople,
       chargeablePeople,
       nonChargeablePeople,
-      dayMenu,
+      dailyDishes,
       ingredientOverrides,
       realIngredientQuantities
     );
@@ -425,7 +681,7 @@ export default function DailyKitchen() {
       totalPeople,
       chargeablePeople,
       nonChargeablePeople,
-      dayMenu,
+      dailyDishes,
       ingredientOverrides,
       realIngredientQuantities
     );
@@ -444,7 +700,7 @@ export default function DailyKitchen() {
         dishes.forEach(d => {
           if (d.details) {
             const unitLabel = d.details.recipe.yieldUnit;
-            summaryText += `• ${d.dish}: ${d.details.requiredYield} ${unitLabel} required (${d.serving} ${unitLabel === 'pcs' ? 'pcs' : 'ml'}/person)\n`;
+            summaryText += `• ${d.dish}: ${d.details.requiredYield} ${unitLabel} (${d.details.dishHeadcount} ppl @ ${d.serving} ${unitLabel === 'pcs' ? 'pcs' : 'ml'}/person)\n`;
           }
         });
         summaryText += '\n';
@@ -588,54 +844,371 @@ export default function DailyKitchen() {
         </div>
       </div>
 
-      {/* Department Headcounts */}
+      {/* ── DAY DEPARTMENT HEADCOUNTS BAR ── */}
       <div className="card mb-xl animate-in-delayed no-print">
-        <div className="card-header">
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div>
-            <h2>Department Headcounts</h2>
+            <div className="flex items-center gap-sm">
+              <span style={{ fontSize: 20 }}>👥</span>
+              <h2>Day Department Headcounts</h2>
+            </div>
             <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
-              Ask department heads 2 days before and update headcount counts here.
+              Update expected headcounts per department. These serve as master headcounts for dish allocations below.
             </div>
           </div>
           <div className="flex items-center gap-sm">
             <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>Total Headcount:</span>
-            <span style={{ fontSize: 24, fontWeight: 700, color: 'var(--accent)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
+            <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--accent)', letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
               {totalPeople}
             </span>
             <span style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>people</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6 }}>
+              ({chargeablePeople} billable · {nonChargeablePeople} free)
+            </span>
           </div>
         </div>
         <div className="card-body">
-          <div className="dept-selector">
-            <label className="form-label" htmlFor="daily-department-select">Department head</label>
-            <select
-              id="daily-department-select"
-              className="form-select"
-              value={selectedDepartment?.id || ''}
-              onChange={e => setSelectedDepartmentId(e.target.value)}
-              aria-label="Select department head"
-            >
-              {departments.map(dept => (
-                <option key={dept.id} value={dept.id}>{dept.name}</option>
-              ))}
-            </select>
-          </div>
-          {selectedDepartment && (
-            <div className="dept-input-card">
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{selectedDepartment.name}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {selectedDepartment.defaultCount} people</div>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))',
+              gap: 12,
+            }}
+          >
+            {departments.map(dept => {
+              const countVal = deptCounts[dept.id] ?? dept.defaultCount;
+              const isFree = dept.isChargeable === false;
+
+              return (
+                <div
+                  key={dept.id}
+                  style={{
+                    padding: '12px 14px',
+                    background: 'var(--bg-primary)',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {dept.name}
+                    </div>
+                    <div className="flex items-center gap-xs" style={{ marginTop: 2 }}>
+                      <span className={`badge ${isFree ? 'badge-neutral' : 'badge-info'}`} style={{ fontSize: 10, padding: '1px 5px' }}>
+                        {isFree ? 'Free' : 'Billable'}
+                      </span>
+                      <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                        Default: {dept.defaultCount}
+                      </span>
+                    </div>
+                  </div>
+
+                  <input
+                    type="number"
+                    className="form-input"
+                    value={countVal}
+                    onChange={e => handleDayDeptCountChange(dept.id, e.target.value)}
+                    style={{
+                      width: 65,
+                      textAlign: 'center',
+                      fontWeight: 700,
+                      fontSize: 14,
+                      padding: '5px 6px',
+                    }}
+                    min="0"
+                    title={`Update headcount for ${dept.name}`}
+                  />
                 </div>
-                <input
-                  type="number"
-                  className="form-input"
-                  value={deptCounts[selectedDepartment.id] ?? ''}
-                  onChange={e => setDeptCounts(prev => ({ ...prev, [selectedDepartment.id]: e.target.value }))}
-                  style={{ width: 75, textAlign: 'center', fontWeight: 600 }}
-                  min="0"
-                />
-              </div>
-          )}
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── GOOGLE SHEETS PRODUCTION MATRIX ── */}
+      <div className="card mb-xl animate-in-delayed no-print" style={{ overflow: 'hidden' }}>
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div>
+            <div className="flex items-center gap-sm">
+              <span style={{ fontSize: 20 }}>📊</span>
+              <h2>Daily Production Sheet (Google Sheets Matrix)</h2>
+              <span className="badge badge-accent" style={{ fontSize: 11 }}>Live Calculation</span>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 4 }}>
+              Set per-person serving sizes & department quantities. To eliminate a department from a dish, mark its cell as <strong>0</strong>.
+            </div>
+          </div>
+          <div className="flex items-center gap-sm">
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={handleResetAllocations}
+              title="Reset all dishes to full day headcount for all departments"
+            >
+              ↺ Reset Allocations
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={saveDailyKitchen}
+            >
+              💾 Save Plan
+            </button>
+          </div>
+        </div>
+
+        <div className="table-container" style={{ maxHeight: 600, overflow: 'auto' }}>
+          <table className="production-matrix-table" style={{ minWidth: 960, margin: 0, width: '100%', borderCollapse: 'separate', borderSpacing: 0 }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-tertiary)', position: 'sticky', top: 0, zIndex: 10 }}>
+                <th style={{ width: 90, textAlign: 'left', padding: '10px 12px', borderBottom: '2px solid var(--border-subtle)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Meal</th>
+                <th style={{ minWidth: 200, textAlign: 'left', padding: '10px 12px', borderBottom: '2px solid var(--border-subtle)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Dish / Recipe</th>
+                <th style={{ width: 140, textAlign: 'center', padding: '10px 12px', borderBottom: '2px solid var(--border-subtle)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Serving / Person</th>
+                {departments.map(d => (
+                  <th key={d.id} style={{ minWidth: 105, textAlign: 'center', padding: '10px 6px', borderBottom: '2px solid var(--border-subtle)' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>{d.name}</div>
+                    <div style={{ fontSize: 10, fontWeight: 500, color: 'var(--text-tertiary)' }}>
+                      Day: {deptCounts[d.id] ?? d.defaultCount}
+                    </div>
+                  </th>
+                ))}
+                <th style={{ width: 110, textAlign: 'center', padding: '10px 10px', borderBottom: '2px solid var(--border-subtle)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total People</th>
+                <th style={{ width: 125, textAlign: 'center', padding: '10px 10px', borderBottom: '2px solid var(--border-subtle)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Required Yield</th>
+                <th style={{ width: 95, textAlign: 'right', padding: '10px 10px', borderBottom: '2px solid var(--border-subtle)', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Est. Cost</th>
+                <th style={{ width: 45, textAlign: 'center', padding: '10px 6px', borderBottom: '2px solid var(--border-subtle)' }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {['breakfast', 'lunch', 'dinner'].map(m => {
+                const dishes = dailyDishes[m] || [];
+                return (
+                  <Fragment key={m}>
+                    {/* Meal group header row */}
+                    <tr style={{ background: 'var(--bg-secondary)', borderTop: '2px solid var(--border-subtle)' }}>
+                      <td colSpan={6 + departments.length} style={{ padding: '8px 14px' }}>
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-sm">
+                            <span className={`meal-tag ${m}`} style={{ fontSize: 11, fontWeight: 700, textTransform: 'capitalize' }}>
+                              {m}
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+                              {dishes.length} {dishes.length === 1 ? 'dish' : 'dishes'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => handleAddDishToMeal(m)}
+                            style={{ fontSize: 11, padding: '2px 8px' }}
+                          >
+                            + Add Dish to {m.charAt(0).toUpperCase() + m.slice(1)}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {dishes.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={6 + departments.length}
+                          style={{
+                            textAlign: 'center',
+                            padding: '16px',
+                            color: 'var(--text-tertiary)',
+                            fontSize: 12,
+                            background: 'var(--bg-primary)',
+                            borderBottom: '1px solid var(--border-subtle)'
+                          }}
+                        >
+                          No dishes scheduled for {m}.{' '}
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => handleAddDishToMeal(m)}
+                            style={{ fontSize: 11 }}
+                          >
+                            + Add a dish
+                          </button>
+                        </td>
+                      </tr>
+                    ) : (
+                      dishes.map((dish, dishIdx) => {
+                        const rec = recipes.find(r => r.name.trim().toLowerCase() === (dish.dish || '').trim().toLowerCase());
+                        const isPieces = rec ? getRecipeServingUnit(rec) === 'pieces' : false;
+                        const dishHeadcount = getDishHeadcount(dish, deptCounts, totalPeople);
+                        const servingAmount = parseFloat(dish.serving) || 0;
+                        const calculatedYield = isPieces
+                          ? Math.round(dishHeadcount * servingAmount)
+                          : Math.round((dishHeadcount * servingAmount) / 1000);
+                        const yieldUnit = rec?.yieldUnit || (isPieces ? 'pcs' : 'L');
+
+                        // Cost calculation
+                        let dishCost = 0;
+                        if (rec) {
+                          const ings = rec.ingredients.map(ing => {
+                            const calculatedQty = calculateRequiredQty(ing.standardQty, calculatedYield, rec.standardYield);
+                            const master = findMasterItem(ing.name, masterList);
+                            const rate = master ? master.pricePerUnit : 0;
+                            return calculateIngredientCost(calculatedQty, rate, ing.unit, master?.unit);
+                          });
+                          dishCost = ings.reduce((sum, cost) => sum + cost, 0);
+                        }
+
+                        return (
+                          <tr
+                            key={`${m}-${dishIdx}`}
+                            style={{
+                              borderBottom: '1px solid var(--border-subtle)',
+                              background: 'var(--bg-primary)',
+                            }}
+                          >
+                            {/* Meal indicator */}
+                            <td style={{ padding: '8px 12px', verticalAlign: 'middle' }}>
+                              <span className={`meal-tag ${m}`} style={{ fontSize: 10, textTransform: 'capitalize' }}>
+                                {m}
+                              </span>
+                            </td>
+
+                            {/* Dish / Recipe Selector */}
+                            <td style={{ padding: '8px 12px', verticalAlign: 'middle' }}>
+                              <select
+                                className="form-select"
+                                value={dish.dish}
+                                onChange={e => handleChangeDishName(m, dishIdx, e.target.value)}
+                                style={{ fontSize: 13, fontWeight: 600, padding: '5px 8px', width: '100%' }}
+                              >
+                                <option value="">Select recipe...</option>
+                                {recipes.map(r => (
+                                  <option key={r.id} value={r.name}>{r.name}</option>
+                                ))}
+                              </select>
+                            </td>
+
+                            {/* Serving / Person */}
+                            <td style={{ padding: '8px 12px', verticalAlign: 'middle' }}>
+                              <div className="flex items-center justify-center gap-xs">
+                                <input
+                                  type="number"
+                                  className="form-input"
+                                  value={dish.serving ?? ''}
+                                  onChange={e => handleServingChange(m, dishIdx, e.target.value)}
+                                  style={{ width: 68, textAlign: 'center', padding: '4px 6px', fontSize: 12, fontWeight: 600 }}
+                                  min="0"
+                                  step={isPieces ? '1' : '10'}
+                                  placeholder={isPieces ? 'pcs' : 'ml'}
+                                />
+                                <span className="badge badge-neutral" style={{ fontSize: 10, padding: '2px 5px' }}>
+                                  {dish.servingUnit || (isPieces ? 'pcs' : 'ml')}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* Department Quantity Spreadsheet Cells */}
+                            {departments.map(dept => {
+                              const rawVal = dish.deptQuantities?.[dept.id];
+                              const qty = rawVal === '' ? '' : (parseInt(rawVal, 10) || 0);
+                              const isZero = qty === 0;
+                              const dayHeadcount = parseInt(deptCounts[dept.id], 10) || 0;
+
+                              return (
+                                <td
+                                  key={dept.id}
+                                  style={{
+                                    padding: '6px 6px',
+                                    textAlign: 'center',
+                                    verticalAlign: 'middle',
+                                    background: isZero ? 'rgba(239, 68, 68, 0.05)' : 'transparent',
+                                    transition: 'background-color 0.15s ease',
+                                  }}
+                                >
+                                  <div className="flex items-center justify-center gap-xs">
+                                    <input
+                                      type="number"
+                                      className="form-input"
+                                      value={rawVal ?? 0}
+                                      onChange={e => handleDeptQtyChange(m, dishIdx, dept.id, e.target.value)}
+                                      style={{
+                                        width: 58,
+                                        textAlign: 'center',
+                                        padding: '4px 2px',
+                                        fontSize: 12,
+                                        fontWeight: 700,
+                                        color: isZero ? 'var(--danger)' : 'var(--text-primary)',
+                                        borderColor: isZero ? '#fca5a5' : 'var(--border-subtle)',
+                                        background: isZero ? '#fff5f5' : 'var(--bg-primary)',
+                                      }}
+                                      min="0"
+                                      title={`${dept.name}: ${qty} people for this dish. Set 0 to eliminate.`}
+                                    />
+                                    <button
+                                      type="button"
+                                      className="btn btn-ghost"
+                                      onClick={() => handleToggleZeroDept(m, dishIdx, dept.id)}
+                                      style={{
+                                        padding: '2px 3px',
+                                        fontSize: 10,
+                                        minWidth: 18,
+                                        height: 24,
+                                        color: isZero ? '#059669' : 'var(--text-tertiary)',
+                                        lineHeight: 1,
+                                      }}
+                                      title={isZero ? `Reset to Day Headcount (${dayHeadcount})` : 'Mark 0 (Exclude Department)'}
+                                    >
+                                      {isZero ? '↺' : '0'}
+                                    </button>
+                                  </div>
+                                  {isZero && (
+                                    <div style={{ fontSize: 9, color: 'var(--danger)', fontWeight: 600, marginTop: 2, letterSpacing: '0.02em' }}>
+                                      Excluded
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+
+                            {/* Total Dish Headcount */}
+                            <td style={{ padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle' }}>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+                                {dishHeadcount}
+                              </span>
+                              <span style={{ fontSize: 10, color: 'var(--text-tertiary)', marginLeft: 3 }}>ppl</span>
+                            </td>
+
+                            {/* Required Yield */}
+                            <td style={{ padding: '8px 10px', textAlign: 'center', verticalAlign: 'middle' }}>
+                              <span className="badge badge-accent" style={{ fontSize: 12, fontWeight: 700 }}>
+                                {calculatedYield} {yieldUnit}
+                              </span>
+                            </td>
+
+                            {/* Est Cost */}
+                            <td style={{ padding: '8px 10px', textAlign: 'right', verticalAlign: 'middle', fontWeight: 600, fontSize: 12 }}>
+                              ₹{formatNumber(dishCost, 0)}
+                            </td>
+
+                            {/* Actions */}
+                            <td style={{ padding: '8px 6px', textAlign: 'center', verticalAlign: 'middle' }}>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => handleRemoveDishFromMeal(m, dishIdx)}
+                                style={{ color: 'var(--danger)', padding: '3px 6px', fontSize: 12 }}
+                                title="Remove dish from this meal"
+                              >
+                                ✕
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -750,10 +1323,24 @@ export default function DailyKitchen() {
                         <strong style={{ color: 'var(--accent)', fontSize: 13 }}>
                           {d.requiredYield} {d.recipe.yieldUnit}
                         </strong> calculated yield (rounded)
-                        <div className="dish-department-summary">
-                          {dish.departments?.length
-                            ? `Served to: ${dish.departments.map(id => departments.find(dept => dept.id === id)?.name).filter(Boolean).join(', ')}`
-                            : 'Served to: all departments'}
+                        <div className="dish-department-summary" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 6px', marginTop: 6 }}>
+                          {departments.map(dept => {
+                            const qty = dish.deptQuantities?.[dept.id] ?? 0;
+                            const isZero = qty === 0;
+                            return (
+                              <span
+                                key={dept.id}
+                                className={`badge ${isZero ? 'badge-neutral' : 'badge-accent'}`}
+                                style={{
+                                  fontSize: 10,
+                                  opacity: isZero ? 0.6 : 1,
+                                  textDecoration: isZero ? 'line-through' : 'none',
+                                }}
+                              >
+                                {dept.name}: {qty}
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>
@@ -971,17 +1558,14 @@ export default function DailyKitchen() {
                           {meal}:
                         </span>
                         <span style={{ color: 'var(--text-primary)' }}>
-                          {dishes.map(d => {
-                            const recipe = recipes.find(r => r.name === d.dish);
-                            return `${d.dish} (${d.serving} ${getRecipeServingUnit(recipe) === 'pieces' ? 'pcs' : 'ml'})`;
-                          }).join(', ')}
+                          {dishes.map(d => d.dish).filter(Boolean).join(', ')}
                         </span>
                       </div>
                     );
                   })}
                   {!generateDayMenu.breakfast?.length && !generateDayMenu.lunch?.length && !generateDayMenu.dinner?.length && (
                     <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-                      No dishes scheduled yet in Monthly Menu for this date. (Recipes scheduled in Monthly Menu will scale automatically).
+                      No dishes scheduled yet in Monthly Menu for this date. (You can add dishes directly in Daily Kitchen).
                     </div>
                   )}
                 </div>
@@ -1010,36 +1594,53 @@ export default function DailyKitchen() {
                     </button>
                   </div>
 
-                  <div className="dept-selector">
-                    <label className="form-label" htmlFor="generate-department-select">Department head</label>
-                    <select
-                      id="generate-department-select"
-                      className="form-select"
-                      value={selectedGenerateDepartment?.id || ''}
-                      onChange={e => setSelectedGenerateDepartmentId(e.target.value)}
-                      aria-label="Select department head for production plan"
-                    >
-                      {departments.map(dept => (
-                        <option key={dept.id} value={dept.id}>{dept.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {selectedGenerateDepartment && (
-                      <div className="dept-input-card" style={{ padding: '10px 14px' }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{selectedGenerateDepartment.name}</div>
-                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Default: {selectedGenerateDepartment.defaultCount} people</div>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                      gap: 10,
+                      marginTop: 8,
+                    }}
+                  >
+                    {departments.map(dept => {
+                      const isFree = dept.isChargeable === false;
+                      return (
+                        <div
+                          key={dept.id}
+                          className="dept-input-card"
+                          style={{
+                            padding: '10px 12px',
+                            margin: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                              {dept.name}
+                            </div>
+                            <div className="flex items-center gap-xs" style={{ marginTop: 2 }}>
+                              <span className={`badge ${isFree ? 'badge-neutral' : 'badge-info'}`} style={{ fontSize: 9, padding: '1px 4px' }}>
+                                {isFree ? 'Free' : 'Billable'}
+                              </span>
+                              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                                Default: {dept.defaultCount}
+                              </span>
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            className="form-input"
+                            value={generateCounts[dept.id] ?? ''}
+                            onChange={e => setGenerateCounts(prev => ({ ...prev, [dept.id]: e.target.value }))}
+                            style={{ width: 65, textAlign: 'center', fontWeight: 700, fontSize: 13, padding: '4px 6px' }}
+                            min="0"
+                          />
                         </div>
-                        <input
-                          type="number"
-                          className="form-input"
-                          value={generateCounts[selectedGenerateDepartment.id] ?? ''}
-                          onChange={e => setGenerateCounts(prev => ({ ...prev, [selectedGenerateDepartment.id]: e.target.value }))}
-                          style={{ width: 75, textAlign: 'center', fontWeight: 700, fontSize: 14 }}
-                          min="0"
-                        />
-                      </div>
-                  )}
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {/* Headcount Live Total Summary */}

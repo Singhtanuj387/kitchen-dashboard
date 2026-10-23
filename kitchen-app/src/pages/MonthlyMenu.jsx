@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { store, getYearMonth, getRecipeServingUnit } from '../store';
+import { store, getYearMonth } from '../store';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -13,13 +13,12 @@ export default function MonthlyMenu() {
   const [copyDayTarget, setCopyDayTarget] = useState('');
   const [toastMessage, setToastMessage] = useState('');
   const [menuForm, setMenuForm] = useState({
-    breakfast: [{ dish: '', serving: '' }],
-    lunch: [{ dish: '', serving: '' }],
-    dinner: [{ dish: '', serving: '' }],
+    breakfast: [{ dish: '' }],
+    lunch: [{ dish: '' }],
+    dinner: [{ dish: '' }],
   });
 
   const recipes = store.getRecipes();
-  const departments = store.getDepartments();
   const yearMonth = getYearMonth(currentDate);
   const [menu, setMenu] = useState(() => store.getMonthlyMenu(yearMonth));
 
@@ -61,9 +60,9 @@ export default function MonthlyMenu() {
     setSelectedDay(day.day);
     const dayMenu = menu[day.day] || {};
     setMenuForm({
-      breakfast: dayMenu.breakfast?.length ? dayMenu.breakfast : [{ dish: '', serving: '' }],
-      lunch: dayMenu.lunch?.length ? dayMenu.lunch : [{ dish: '', serving: '' }],
-      dinner: dayMenu.dinner?.length ? dayMenu.dinner : [{ dish: '', serving: '' }],
+      breakfast: dayMenu.breakfast?.length ? dayMenu.breakfast.map(d => ({ dish: d.dish || '' })) : [{ dish: '' }],
+      lunch: dayMenu.lunch?.length ? dayMenu.lunch.map(d => ({ dish: d.dish || '' })) : [{ dish: '' }],
+      dinner: dayMenu.dinner?.length ? dayMenu.dinner.map(d => ({ dish: d.dish || '' })) : [{ dish: '' }],
     });
     setShowModal(true);
   }
@@ -71,7 +70,7 @@ export default function MonthlyMenu() {
   function addDish(mealType) {
     setMenuForm(prev => ({
       ...prev,
-      [mealType]: [...prev[mealType], { dish: '', serving: '', departments: [] }]
+      [mealType]: [...prev[mealType], { dish: '' }]
     }));
   }
 
@@ -93,12 +92,10 @@ export default function MonthlyMenu() {
     const ym = getYearMonth(currentDate);
     const cleanMenu = {};
     ['breakfast', 'lunch', 'dinner'].forEach(meal => {
-      const dishes = menuForm[meal].filter(d => d.dish.trim());
+      const dishes = menuForm[meal].filter(d => d.dish && d.dish.trim());
       if (dishes.length > 0) {
         cleanMenu[meal] = dishes.map(d => ({
           dish: d.dish.trim(),
-          serving: parseFloat(d.serving) || 0, // ml per person
-          departments: Array.isArray(d.departments) ? d.departments : [],
         }));
       }
     });
@@ -106,6 +103,7 @@ export default function MonthlyMenu() {
     store.saveMonthlyMenu(ym, updatedMenu);
     setMenu(updatedMenu);
     setShowModal(false);
+    showToast(`Saved dishes for ${MONTHS[month]} ${selectedDay}`);
   }
 
   function cloneMenu(value) {
@@ -251,65 +249,44 @@ export default function MonthlyMenu() {
                   </button>
                 </div>
               </div>
+              <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--bg-tertiary)', borderRadius: 8, fontSize: 12, color: 'var(--text-secondary)' }}>
+                💡 <strong>Monthly Menu Guide:</strong> Select the dishes to be cooked for this day. Serving sizes (e.g. 200ml, 3 pcs) and department headcounts are managed flexibly in the <strong>Daily Kitchen</strong> production sheet.
+              </div>
               {['breakfast', 'lunch', 'dinner'].map(mealType => (
                 <div key={mealType} style={{ marginBottom: 'var(--space-xl)' }}>
-                  <div className="flex items-center justify-between mb-lg">
+                  <div className="flex items-center justify-between mb-md">
                     <div className="flex items-center gap-sm">
                       <span className={`meal-tag ${mealType}`} style={{ fontSize: 12, fontWeight: 600, textTransform: 'capitalize' }}>
                         {mealType}
+                      </span>
+                      <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                        ({menuForm[mealType].filter(d => d.dish).length} dishes)
                       </span>
                     </div>
                     <button className="btn btn-ghost btn-sm" onClick={() => addDish(mealType)}>+ Add Dish</button>
                   </div>
                   {menuForm[mealType].map((dish, idx) => (
-                    <div key={idx} className="flex items-center gap-md mb-lg">
-                      <div className="form-group" style={{ flex: 2, margin: 0 }}>
+                    <div key={idx} className="flex items-center gap-md mb-sm">
+                      <div className="form-group" style={{ flex: 1, margin: 0 }}>
                         <select
                           className="form-select"
                           value={dish.dish}
                           onChange={e => updateDish(mealType, idx, 'dish', e.target.value)}
                         >
-                          <option value="">Select recipe...</option>
+                          <option value="">Select recipe to cook...</option>
                           {recipes.map(r => (
                             <option key={r.id} value={r.name}>{r.name}</option>
                           ))}
                         </select>
                       </div>
-                      <div className="form-group" style={{ flex: 1, margin: 0 }}>
-                        <input
-                          type="number"
-                          className="form-input"
-                          placeholder={
-                            getRecipeServingUnit(recipes.find(r => r.name === dish.dish)) === 'pieces'
-                              ? 'serving (pcs)'
-                              : 'serving (ml)'
-                          }
-                          value={dish.serving}
-                          onChange={e => updateDish(mealType, idx, 'serving', e.target.value)}
-                          min="0"
-                        />
-                      </div>
-                      <div className="dish-department-picker">
-                        <span className="form-hint">Served to</span>
-                        <div className="dish-department-options">
-                          {departments.map(dept => (
-                            <label key={dept.id} className="dish-department-option">
-                              <input
-                                type="checkbox"
-                                checked={(dish.departments || []).includes(dept.id)}
-                                onChange={e => {
-                                  const nextDepartments = e.target.checked
-                                    ? [...(dish.departments || []), dept.id]
-                                    : (dish.departments || []).filter(id => id !== dept.id);
-                                  updateDish(mealType, idx, 'departments', nextDepartments);
-                                }}
-                              />
-                              {dept.name}
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                      <button className="btn btn-danger btn-sm btn-icon" onClick={() => removeDish(mealType, idx)}>✕</button>
+                      <button
+                        type="button"
+                        className="btn btn-danger btn-sm btn-icon"
+                        onClick={() => removeDish(mealType, idx)}
+                        title="Remove dish"
+                      >
+                        ✕
+                      </button>
                     </div>
                   ))}
                 </div>
